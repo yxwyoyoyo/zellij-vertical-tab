@@ -1,91 +1,82 @@
 ---
 type: Repository Guide
 title: zellij-vertical-tab Quickstart
-description: Entry point for understanding, building, testing, and changing the zellij-vertical-tab Rust/WASM plugin, including its source layout and critical Zellij 0.44 constraints.
+description: Entry point for the pane-aware zellij-vertical-tab Rust/WASM plugin, including its adaptive tab hierarchy, per-pane Codex status, 32-column layout, source map, and maintainer workflows.
 resource: README.md
-tags: [zellij, rust, wasm, plugin, quickstart]
+tags: [zellij, rust, wasm, codex, quickstart]
 ---
 
 # zellij-vertical-tab
 
-`zellij-vertical-tab` is a Zellij plugin that replaces the usual horizontal tab bar with a fixed-width vertical list. Each row shows the tab's one-based switching index and name; the active row uses the user's Zellij theme. Users can click a row to switch tabs or scroll when the list exceeds the pane height (`README.md`, `src/main.rs`).
+`zellij-vertical-tab` replaces Zellij's horizontal tab bar with a borderless vertical sidebar. Every tab has a parent row; tabs with zero or one terminal pane remain compact, while tabs with multiple terminal panes gain always-visible indented children. The hierarchy is adaptive rather than collapsible, and plugin panes such as the sidebar and status bar are never shown as children (`README.md`, `src/main.rs`).
 
-The codebase is intentionally small: all runtime behavior, pure domain helpers, and unit tests live in `src/main.rs`. Start with the [runtime architecture](architecture.md) to understand the event/state/render loop, then use the [development and operations guide](development.md) to build, test, install, or troubleshoot it.
+The [architecture guide](architecture.md) explains the flattened row model, pane-owned Codex state, synchronization, rendering, and click dispatch. The [development and operations guide](development.md) covers mise-managed build, test, release, install, hot reload, and runtime checks.
 
-## Fast path for engineers
+## Fast path
 
-### Prerequisites
+### Requirements
 
-- Zellij **0.44.3**.
-- Rust with the `wasm32-wasip1` target.
-- On the repository author's machine, Rust is managed by `mise`, so maintainer commands use `mise exec -- cargo ...` (`AGENTS.md`). Plain `cargo` is equivalent when a suitable toolchain is already on `PATH`.
-
-The `zellij-tile` crate version must match the installed Zellij binary because their protobuf event schema is version-sensitive (`Cargo.toml`, `tasks/lessons.md`).
-
-### Build and launch
+- Zellij **0.44.3** and matching `zellij-tile = 0.44.3`.
+- Rust with the `wasm32-wasip1` target; this machine exposes Rust through `mise`, so maintainer commands use `mise exec -- cargo ...` (`AGENTS.md`).
+- A Nerd Font for the four Codex status glyphs.
 
 ```sh
-rustup target add wasm32-wasip1
-mise exec -- cargo test
-mise exec -- cargo build --target wasm32-wasip1
-zellij -l zellij.kdl
+rustup target add wasm32-wasip1                 # once
+mise exec -- cargo test                         # host Rust tests
+mise exec -- cargo build --target wasm32-wasip1 # debug WASM
+zellij -l zellij.kdl                            # run from the repository root
 ```
 
-The debug plugin is generated at `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm`. On first launch, grant `ReadApplicationState` and `ChangeApplicationState`; without the read permission, Zellij withholds tab updates and the pane remains blank. See [development and operations](development.md#build-run-and-install) for release installation and test procedures.
+The development layout loads `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm` into a fixed **32-column** pane. On first use, approve `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, and `MessageAndLaunchOtherPlugins`; the last two support Codex messages and synchronization among the sidebar instance created in each tab.
 
-## What the plugin guarantees
+## User-visible contract
 
-- One rendered row per visible tab, with right-aligned one-based indices.
-- Active-tab highlighting through Zellij's host-rendered `Text::selected()` theme style.
-- Click-to-switch using the row's tab position.
-- One-row wheel scrolling with `▲` and `▼` overflow markers.
-- Automatic scroll adjustment when keyboard or external tab switching moves the active tab outside the visible window.
-- A borderless, unselectable side pane in the supplied layout, inherited by every new tab.
+- **Adaptive hierarchy:** every tab contributes a parent row. More than one terminal pane adds one child row per terminal pane; zero or one does not. Children are ordered tiled, floating, then suppressed, with each layer ordered by `y`, `x`, and pane ID.
+- **Status ownership:** status is keyed by terminal pane ID. A one-pane tab shows its pane's glyph on the compact tab row. A multi-pane tab shows each glyph only on its owning pane child; the parent has no aggregate glyph or pane count.
+- **Selection:** the active tab and the focused child of the active multi-pane tab use Zellij selected styling across the fitted row.
+- **Exact clicks:** a valid tab-row click calls `switch_tab_to(position + 1)`; a pane-row click calls `focus_terminal_pane(id, false, false)`, allowing Zellij to switch tab/layer and focus that exact terminal pane. Clicks outside rendered rows do nothing.
+- **Shared viewport:** rendering, wheel scrolling, overflow markers, and click mapping consume one flattened row vector. Wheel input moves one hierarchy row; keyboard tab changes minimally move the window to reveal the active tab.
+- **Cell-aware rows:** tab names and pane titles are measured in terminal cells and receive `…` when truncated. Every row fills the available width for selection styling and, whenever its required prefix or badge still fits, reserves a **one-cell right inset**. A status glyph is right-aligned before that uncolored cell.
 
-These product rules are implemented by the state machine and pure formatting/window functions described in [architecture](architecture.md#domain-rules).
+These rules are canonicalized in `openspec/specs/vertical-tab-sidebar/spec.md` and `openspec/specs/agent-status/spec.md` and implemented in `src/main.rs`.
 
 ## Critical invariants
 
-Preserve all of these when changing the plugin or layout:
+1. Keep the plugin a binary crate: Zellij expects the command-module `_start` export generated through `register_plugin!`.
+2. Keep `zellij-tile` aligned with the installed Zellij binary.
+3. Keep `set_selectable(false)` out of `load()`; it is deliberately deferred to the first event to avoid a Zellij 0.44 startup failure.
+4. Keep layout `children` wrapped in `pane { children }` beside the unselectable plugin pane.
+5. Keep the non-WASM `host_run_plugin_command` stub while host tests link against `zellij-tile` imports.
+6. Derive rendering and clicks from the same `SidebarRow` sequence; parallel row arithmetic would make scrolled pane clicks unsafe.
 
-1. Keep the project a **binary crate**. Zellij loads the WASM `_start` export generated through `register_plugin!`; a reactor/cdylib form does not provide the expected entrypoint.
-2. Keep `zellij-tile` aligned with the Zellij binary version.
-3. Do not call `set_selectable(false)` from `load()`. On Zellij 0.44, that can kill the client during startup when the plugin is in a `default_tab_template`; `update()` deliberately defers the call until the first event.
-4. In the layout, keep template `children` wrapped inside `pane { children }`. A direct sibling relationship with the unselectable plugin pane was empirically observed to crash the session.
-5. Keep the non-WASM `host_run_plugin_command` stub if host-target unit tests still link against `zellij-tile` host imports.
-
-The reasons and data flow behind these constraints live in [architecture](architecture.md#runtime-and-layout-constraints); reproduction and diagnosis guidance lives in [development and operations](development.md#runbook-and-troubleshooting).
+See [architecture constraints](architecture.md#runtime-and-layout-constraints) for rationale and [the runbook](development.md#runbook) for diagnosis.
 
 ## Source map
 
 | Path | Role | Start here when… |
 | --- | --- | --- |
-| `src/main.rs` | Complete plugin: lifecycle, state, event handling, rendering, pure helpers, and 12 unit tests | Changing behavior, interaction, rendering, or tests |
-| `Cargo.toml` | Binary target, `zellij-tile` compatibility pin, size-focused release profile | Changing dependencies, Zellij version, artifact naming, or optimization |
-| `Cargo.lock` | Resolved Rust dependency graph | Reviewing exact dependency resolution |
-| `zellij.kdl` | Development `default_tab_template` with a 20-column plugin pane and status bar | Changing pane placement or reproducing runtime behavior |
-| `README.md` | User-facing build, trial, installation, and feature documentation | Updating public usage instructions |
-| `AGENTS.md` | Maintainer commands and crash-derived hard constraints | Preparing a code change or headless integration run |
-| `tasks/lessons.md` | Empirical rationale, TUI test techniques, and failure analysis | Investigating compatibility or startup crashes |
-| `tasks/todo.md` | Completed feature/e2e record and deferred feature ideas | Understanding progression and possible next work |
-| `.github/workflows/openwiki-update.yml` | Scheduled/manual OpenWiki update pull request | Maintaining documentation automation |
+| `src/main.rs` | Plugin state, Zellij lifecycle, adaptive rows, status synchronization, formatting, input, and Rust unit tests | Changing runtime or UI behavior |
+| `hooks/codex/` | Dependency-free lifecycle/completion bridges, hook template, and Python tests | Changing Codex publication or installation |
+| `openspec/specs/` | Current behavior contracts for the sidebar and agent status | Checking intended product behavior |
+| `openspec/changes/archive/` | Archived proposals, designs, deltas, and completion evidence | Understanding why status, badges, ellipsis, or pane hierarchy changed |
+| `zellij.kdl` | Development template with 32-column sidebar, content pane, and status bar | Changing layout or launching locally |
+| `Cargo.toml` | Binary target, ABI-sensitive dependency pin, and size-focused release profile | Changing packaging or dependencies |
+| `README.md` | User installation, Codex setup, and behavior | Updating public instructions |
+| `AGENTS.md` | mise commands, PTY runbook, and crash-derived constraints | Preparing or validating a change |
+| `.github/workflows/openwiki-update.yml` | Scheduled/manual documentation update PR | Maintaining wiki automation |
 
-There is no dedicated integration-test directory or release workflow. Unit tests are colocated with the implementation, while headless runtime verification is documented as an operator procedure.
+## Repository progression
 
-## Repository progression and evidence limits
-
-Checked-in notes describe a progression from scaffolding a Rust binary plugin, through implementation and 12 unit tests, to headless PTY verification of permission grant, rendering, new-tab inheritance, click switching, and active styling (`tasks/todo.md`). `tasks/lessons.md` records that controlled runtime experiments isolated the bin-crate requirement and the layout/selectability crash conditions.
-
-The supplied repository root contains no `.git` metadata. `git status`, `git rev-parse`, and `git log` therefore fail, so commit chronology and blame evidence are unavailable in this documentation pass. Treat the task notes and inline comments as the available rationale, not as a replacement for recoverable git history.
+Git history shows the initial vertical list followed by four specification-driven increments on 2026-07-17: per-pane Codex lifecycle status, theme-aligned status glyphs, cell-aware name ellipsis, and finally pane-aware rows in merged commit `0186450`. Each completed change was moved under `openspec/changes/archive/`, while its resulting contract was merged into `openspec/specs/`. The latest change intentionally replaced lossy multi-pane aggregation with exact pane ownership while preserving the existing wire protocol and cross-sidebar synchronization.
 
 ## Documentation map
 
-- [Architecture and domain model](architecture.md) — lifecycle, state, event flows, rendering, integrations, invariants, and extension points.
-- [Development, testing, and operations](development.md) — build/install workflows, test strategy, headless runbook, troubleshooting, release concerns, and OpenWiki automation.
+- [Architecture and domain model](architecture.md) — lifecycle, state ownership, hierarchy, synchronization, rendering, and integrations.
+- [Development, testing, and operations](development.md) — current commands, Codex setup, release/install/hot reload, checks, and troubleshooting.
 
 ## Backlog
 
-- **Automated CI artifact build** — source anchor: `tasks/todo.md` “Maybe later”; deferred because only documentation-update automation currently exists.
-- **Future interactions (hover, new-tab row, right-click close)** — source anchor: `tasks/todo.md`; deferred because these are ideas, not implemented behavior.
-- **Upstream Zellij crash report** — source anchor: `tasks/todo.md` and `tasks/lessons.md`; deferred because no upstream issue URL or resolution is recorded.
-- **Standalone license file** — source anchor: `Cargo.toml` and `README.md`; package metadata says MIT, but no `LICENSE` file is present.
+- **Automated product CI/artifact publishing** — source anchor: `.github/workflows/` and `tasks/todo.md`; deferred because the only checked-in workflow updates OpenWiki.
+- **Future interactions (hover, new-tab row, right-click close)** — source anchor: `tasks/todo.md`; deferred because these remain ideas rather than implemented behavior.
+- **Upstream Zellij startup-crash report** — source anchor: `tasks/lessons.md`; deferred because no upstream issue or resolution is recorded.
+- **Standalone license file** — source anchor: `Cargo.toml` and `README.md`; metadata says MIT but no `LICENSE` file is checked in.
