@@ -1,121 +1,105 @@
 ---
 type: Engineering Runbook
-title: "Development, Testing, and Operations"
-description: Practical runbook for building, installing, testing, troubleshooting, and maintaining zellij-vertical-tab and its Zellij 0.44.3 integration.
+title: Development, Testing, and Operations
+description: Mise-managed runbook for building, testing, releasing, installing, hot-reloading, and troubleshooting the pane-aware zellij-vertical-tab plugin and its Codex status bridge.
 resource: AGENTS.md
-tags: [development, testing, operations, zellij, rust, wasm]
+tags: [development, testing, operations, mise, zellij, codex]
 ---
 
 # Development, testing, and operations
 
-This guide turns the [plugin architecture](architecture.md) into repeatable engineering workflows. For product scope and repository navigation, begin at the [quickstart](quickstart.md).
+This runbook applies the invariants in the [plugin architecture](architecture.md). For product behavior and repository navigation, start at the [quickstart](quickstart.md).
 
-## Build, run, and install
+## Mise-managed workflows
 
-### Toolchain
+The maintainer machine has no system Cargo; Rust commands are run through `mise exec --` (`AGENTS.md`). The repository does not define checked-in mise task aliases, so use the explicit commands below. Add `wasm32-wasip1` once with `rustup target add wasm32-wasip1`.
 
-The plugin targets Zellij 0.44.3 and `wasm32-wasip1`. `Cargo.toml` pins `zellij-tile` to the same version. On the maintainer's machine, `mise` provides Rust, so use:
+### Build and test
 
 ```sh
 mise exec -- cargo test
+python3 -m unittest discover -s hooks/codex -p 'test_*.py'
 mise exec -- cargo build --target wasm32-wasip1
-mise exec -- cargo build --release --target wasm32-wasip1
 ```
 
-If Rust is available globally, omit `mise exec --`. Add the WASI target once with `rustup target add wasm32-wasip1`.
+The host Rust tests exercise pure status, pane hierarchy, row target, viewport, cell-width, inset, and styling helpers. The Python tests exercise lifecycle mapping, process-exit cleanup, completion notification parsing, and notifier forwarding. The debug artifact is `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm`.
 
-Artifacts are:
-
-- Debug: `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm`
-- Release: `target/wasm32-wasip1/release/zellij_vertical_tab.wasm`
-
-The release profile enables LTO, optimizes for size, uses one codegen unit, and strips symbols (`Cargo.toml`). `target/` is ignored and should not be documented or committed as source.
-
-### Development launch
-
-After a debug build, run from the repository root:
+### Release build and install
 
 ```sh
+mise exec -- cargo build --release --target wasm32-wasip1
+mkdir -p ~/.config/zellij/plugins
+install -m 644 target/wasm32-wasip1/release/zellij_vertical_tab.wasm \
+  ~/.config/zellij/plugins/zellij_vertical_tab.wasm
+```
+
+The release profile enables LTO, size optimization, one codegen unit, and stripping (`Cargo.toml`). Configure `~/.config/zellij/layouts/default.kdl` from the README example: use `size=32`, keep `children` nested in its own pane, and point the plugin location at the installed WASM.
+
+### Development launch and hot reload
+
+```sh
+mise exec -- cargo build --target wasm32-wasip1
 zellij -l zellij.kdl
 ```
 
-Approve the permission prompt on first load. The layout loads the debug artifact from a relative `file:` path, so launching elsewhere can make the path resolve incorrectly.
-
-For a running development session, README documents:
+Run the layout from the repository root because it loads a relative debug artifact. For a running development session, rebuild and then reload:
 
 ```sh
+mise exec -- cargo build --target wasm32-wasip1
 zellij action start-or-reload-plugin \
   file:target/wasm32-wasip1/debug/zellij_vertical_tab.wasm
 ```
 
-Rebuild before each reload; `tasks/lessons.md` records that a stale WASM artifact once produced misleading integration results.
+A stale WASM can make source-level debugging misleading (`tasks/lessons.md`). Hot reload is suitable for rendering and state iteration; startup-template and permission behavior still needs a fresh session.
 
-### Everyday installation
+## Codex bridge installation
+
+Install the dependency-free bridge and hook template once at user scope so Codex sessions from any project can publish into the owning Zellij terminal pane:
 
 ```sh
-mkdir -p ~/.config/zellij/plugins
-cp target/wasm32-wasip1/release/zellij_vertical_tab.wasm \
-  ~/.config/zellij/plugins/
+mkdir -p ~/.codex/hooks
+install -m 755 hooks/codex/agent_status.py ~/.codex/hooks/agent_status.py
+install -m 755 hooks/codex/agent_notify.py ~/.codex/hooks/agent_notify.py
+install -m 644 hooks/codex/hooks.json ~/.codex/hooks.json
 ```
 
-Then add a `default_tab_template` equivalent to the README example under `~/.config/zellij/layouts/default.kdl`. Preserve the nested pane around `children`:
+If `~/.codex/hooks.json` exists, merge the entries rather than overwriting it. Configure completion notification in `~/.codex/config.toml` with the absolute home path:
 
-```kdl
-layout {
-    default_tab_template {
-        pane split_direction="vertical" {
-            pane size=20 borderless=true {
-                plugin location="file:~/.config/zellij/plugins/zellij_vertical_tab.wasm"
-            }
-            pane {
-                children
-            }
-        }
-        pane size=1 borderless=true {
-            plugin location="zellij:status-bar"
-        }
-    }
-}
+```toml
+notify = ["/usr/bin/python3", "/Users/you/.codex/hooks/agent_notify.py"]
 ```
 
-The default template makes new tabs inherit the sidebar. It replaces the default horizontal tab-bar unless that built-in plugin is also retained.
+To preserve an existing notifier, place its command and fixed arguments between `--forward` and the final `--`, as shown in `README.md`. The lifecycle bridge maps `SessionStart` to idle, `UserPromptSubmit`/`PreToolUse` to working, `PermissionRequest` to waiting, and `Stop` to done. The notification bridge covers `agent-turn-complete`; the detached watcher emits clear when the Codex process exits. Both bridges are best-effort and return success when outside Zellij or when publication fails.
 
 ## Testing strategy
 
-### Host unit tests
+### Rust host tests
 
-Twelve tests are colocated in `src/main.rs`. They cover:
+Run `mise exec -- cargo test`. Tests are colocated in `src/main.rs` and currently cover:
 
-- no-overflow and zero-height windows;
-- absent, above-window, below-window, and already-visible active tabs;
-- offset repair when tabs shrink;
-- boundary clamping;
-- padding and truncation;
-- single- and double-digit row alignment and overflow markers.
+- viewport bounds and active-tab following over flattened hierarchy rows;
+- terminal-pane filtering and deterministic tiled/floating/suppressed ordering;
+- compact zero/one-pane tabs and expanded multi-pane children;
+- focused tiled/floating child selection and empty-title fallback;
+- exact tab versus pane row targets;
+- payload validation, timestamps, pane reuse, clear tombstones, cleanup, peer discovery, and snapshots;
+- cell-aware truncation, wide characters, ellipsis, index/pane alignment, badge preservation, one-cell inset, and theme styling.
 
-Run:
+Keep runtime host calls out of these tests unless a proper mock layer is introduced; the non-WASM import stub exists only to link pure tests.
 
-```sh
-mise exec -- cargo test
-```
+### Python bridge tests
 
-A non-WASM `host_run_plugin_command` symbol stub allows these host-target tests to link. Tests deliberately exercise pure helpers only; calling runtime host APIs in host tests would require a different mocking strategy.
+Run `python3 -m unittest discover -s hooks/codex -p 'test_*.py'`. Add cases whenever lifecycle mapping, notification payload fields, forwarding syntax, or process cleanup changes.
 
-When changing viewport or formatting rules, add table-like edge cases around zero rows, fewer tabs than rows, last-page offsets, changing active position, narrow widths, and multibyte names. The [architecture domain rules](architecture.md#domain-rules) define the intended behavior.
+### WASM and specification checks
 
-### WASM build check
+Always pair host tests with a WASM build because host success does not prove the runtime target or `_start` module shape. For release work, build `--release` as well. The archived pane-aware completion record (`openspec/changes/archive/2026-07-17-nest-panes-under-tabs/tasks.md`) also records formatting, Clippy, strict OpenSpec validation, release installation, and live/headless verification. Repeat those categories when changing implementation or specs; exact formatter/Clippy/OpenSpec command lines are not checked into the repository, so do not assume undocumented aliases.
 
-Unit-test success does not prove that the plugin compiles to the runtime target or exports the command entrypoint. Always pair it with:
+The current behavior contract is `openspec/specs/`. Completed proposals and rationale are under `openspec/changes/archive/`; there is no active change directory at the current merged `main` head.
 
-```sh
-mise exec -- cargo build --target wasm32-wasip1
-```
+## Runtime verification
 
-For release work, also build `--release`. The checked-in completion notes say `_start`, `load`, `update`, `render`, `pipe`, and `plugin_version` were previously verified, but there is no checked-in automated export assertion.
-
-### Headless runtime verification
-
-Lifecycle, permissions, layout stability, theme styling, and mouse behavior require a real Zellij process. `AGENTS.md` documents a macOS PTY harness:
+Lifecycle, permissions, peer synchronization, layout safety, theme styling, and mouse focus require Zellij. The macOS PTY harness in `AGENTS.md` is:
 
 ```sh
 ( ( sleep 10 ) | env -u ZELLIJ -u ZELLIJ_SESSION_NAME -u ZELLIJ_PANE_ID \
@@ -124,64 +108,50 @@ sleep 8 && zellij list-sessions
 zellij kill-session <name>
 ```
 
-The environment variables are removed so the process does not think it is nested in or attaching to another session. The input pipe can send `y` for permission approval and SGR mouse sequences for clicks. Discover the generated session name from `zellij list-sessions`; `zellij -s <name>` is attach semantics and does not create a fresh session.
+Unset the Zellij variables so the process does not think it is nested. The input pipe may approve permissions with `y` and inject SGR mouse sequences. A minimum pane-aware pass verifies:
 
-A minimum runtime regression pass should verify:
+1. startup survives permission grant and renders a 32-column sidebar with no horizontal tab bar;
+2. one-pane tabs stay compact, while a multi-pane tab lists all terminal panes and excludes plugin panes;
+3. pane children follow tiled/floating/suppressed visual order and the focused visible-layer child is selected;
+4. one-pane status appears on the tab, multi-pane statuses remain on exact children, and no aggregate/count appears;
+5. a new tab's sidebar obtains current statuses from an existing peer;
+6. a tab-row click switches tabs, while a pane-row click focuses that exact pane, including after scrolling;
+7. long ASCII/wide names ellipsize, badges remain intact, and every normal-width row keeps its rightmost cell blank;
+8. wheel overflow and keyboard tab switching operate on the flattened hierarchy.
 
-1. The session remains alive after startup and permission grant.
-2. The vertical list renders and the horizontal tab bar is absent as intended.
-3. Creating a tab inherits the sidebar and highlights the new active row.
-4. Clicking the previous row switches back.
-5. Enough tabs to overflow show markers and wheel scrolling respects boundaries.
-6. Keyboard tab switching moves the visible window to include the active tab.
+## Runbook
 
-`tasks/todo.md` records that startup stability, permission grant, rendering, click switching, and active styling passed in the final historical PTY run. That record is useful regression evidence, but it is not an automated test suite.
+### Blank sidebar or missing status
 
-## Runbook and troubleshooting
+- Confirm all four plugin permissions were granted. `ReadApplicationState` gates tab/pane updates; `ReadCliPipes` gates Codex input; peer synchronization needs `MessageAndLaunchOtherPlugins`.
+- Confirm the KDL path points to a freshly built artifact and that `zellij-tile` matches Zellij 0.44.3.
+- For a missing Codex badge, confirm the global hooks are installed/merged and the process has `ZELLIJ_PANE_ID`. A newly launched Codex TUI may not emit idle until hooks initialize on the first prompt.
+- If only a newly created tab lacks existing statuses, inspect peer discovery/snapshot handling rather than reintroducing tab-level aggregation.
 
-### Blank pane after load
+### Wrong row or pane activates
 
-1. Check whether `ReadApplicationState` was granted. Without it, Zellij silently withholds `TabUpdate`; task notes say server logs contain per-event permission denial.
-2. Confirm the plugin path. Permission grants are cached by location, so a changed path can require approval again.
-3. Confirm `zellij-tile` and the Zellij binary are both 0.44.3.
-4. Confirm the debug or installed WASM was rebuilt and exists at the KDL location.
+Trace the click through `build_sidebar_rows` and `RowTarget`. Mouse lines and `scroll_offset` address the flattened hierarchy; tab targets use one-based switching, while pane targets use stable terminal IDs. Never compute render and click rows independently.
+
+### Status appears on the wrong row
+
+Check pane cardinality first. Exactly one terminal pane owns the parent badge; more than one moves all statuses to children and leaves the parent empty. Plugin panes do not count. Then inspect `pane_tabs`, `terminal_panes`, and the pane-keyed record rather than tab names or titles.
+
+### Row touches the right edge or clips a badge
+
+Keep `ROW_RIGHT_PADDING = 1`, reserve badge width before fitting the body, and exclude the trailing cell from the badge color range. Use terminal-cell width rather than Rust character count, and extend narrow/wide-character tests with the change.
+
+### Client exits at startup
+
+Keep `set_selectable(false)` deferred until the first event and keep `children` wrapped in `pane { ... }`. Test template changes in a fresh Zellij session, not only via hot reload. On macOS, inspect the Zellij log path described in `tasks/lessons.md` and vary one lifecycle/layout condition at a time.
 
 ### “Could not find exported function”
 
-Confirm `Cargo.toml` still declares a binary target using `src/main.rs` and `register_plugin!(State)` remains. A cdylib/reactor build does not provide the `_start` export expected by Zellij.
+Confirm the explicit binary target and `register_plugin!(State)` remain. A reactor/cdylib build does not expose the `_start` entrypoint expected by Zellij.
 
-### Client exits during startup
+## Release and maintenance notes
 
-Check both crash-derived constraints before changing application logic:
-
-- `set_selectable(false)` must remain deferred until the first `update()` event.
-- Layout `children` must remain wrapped in its own `pane` when adjacent to the unselectable plugin pane.
-
-On macOS, inspect `$TMPDIR/zellij-501/zellij-log/zellij.log`; `tasks/lessons.md` notes that “Bye from Zellij!” indicates a clean router-ended client exit, so inspect preceding messages for the trigger. Reproduce with a controlled PTY matrix and change one layout/API variable at a time.
-
-### Mouse click selects the wrong tab
-
-Trace the coordinate conventions in [architecture](architecture.md#click-to-switch): mouse content rows are zero-based, `scroll_offset` is a vector index, and `switch_tab_to` expects `TabInfo.position + 1`. Changes that add headers, separators, or action rows must introduce an explicit visual-row mapping rather than reusing direct indexing.
-
-### Highlight does not span the row
-
-Ensure `format_row` still pads output to the full pane width and active rows still receive `Text::selected()`. Styling is resolved by Zellij's theme; hard-coded terminal colors would bypass the intended integration.
-
-## Compatibility and release notes
-
-- Treat a Zellij upgrade as an integration change: update the binary, `zellij-tile`, lockfile, and runtime test environment together.
-- Re-run host tests, debug WASM build, and the headless scenario after any version update.
-- Preserve the binary-module shape and inspect exports if packaging changes.
-- Test layout modifications in `default_tab_template`, not only an explicit one-off tab, because startup geometry caused the known crash.
-- No GitHub Actions workflow currently builds/tests or publishes WASM. Release is a local build-and-copy process.
-- Package metadata and README state MIT, but the repository has no standalone `LICENSE` file.
-
-## Documentation automation
-
-`.github/workflows/openwiki-update.yml` runs daily at 08:00 UTC and on manual dispatch. It checks out the repository, installs OpenWiki with Node.js 22, executes `openwiki code --update --print`, and opens/updates an `openwiki/update` pull request containing the wiki and OpenWiki-related repository files.
-
-The workflow is a documentation integration, not a product CI check: it does not install Rust, run tests, build WASM, or exercise Zellij. Credentials are supplied through GitHub Actions secrets; never copy their values into documentation.
-
-## Verification status for this wiki pass
-
-The source tree, configuration, existing notes, workflow, lockfile version, 12 test declarations, and generated debug/release artifact presence were inspected. Fresh commands could not be run because `mise`, `cargo`, `rustc`, and `zellij` were unavailable in the execution environment. Git history also could not be inspected because the supplied root has no `.git` directory. Future updates should replace this limitation with current command and commit evidence when the repository metadata and toolchain are available.
+- Treat a Zellij upgrade as an ABI migration: update the binary, `zellij-tile`, lockfile, and runtime test environment together.
+- Release remains a local mise build plus install/copy; no checked-in product CI publishes WASM.
+- Keep baseline OpenSpec files synchronized with implemented behavior, then archive completed changes with their proposal/design/task evidence.
+- `.github/workflows/openwiki-update.yml` updates documentation daily or on demand; it does not build, test, install, or release the plugin.
+- The current merged branch is `main` at `0186450`, with a clean working tree before this documentation update. Recent history, unlike the initial wiki run, is available and records the status, badge, ellipsis, and pane-aware progression.

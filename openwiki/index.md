@@ -6,6 +6,6 @@ description: "Files and subdirectories in OpenWiki."
 
 # Files
 
-- [Plugin Architecture and Domain Model](architecture.md) - Runtime architecture of zellij-vertical-tab, covering Zellij lifecycle integration, state transitions, scrolling and row formatting rules, permissions, layout constraints, and extension points.
-- [Development, Testing, and Operations](development.md) - Practical runbook for building, installing, testing, troubleshooting, and maintaining zellij-vertical-tab and its Zellij 0.44.3 integration.
-- [zellij-vertical-tab Quickstart](quickstart.md) - Entry point for understanding, building, testing, and changing the zellij-vertical-tab Rust/WASM plugin, including its source layout and critical Zellij 0.44 constraints.
+- [Plugin Architecture and Domain Model](architecture.md) - Runtime architecture of the pane-aware Zellij sidebar, covering adaptive tab and pane rows, terminal-pane Codex status ownership, peer synchronization, cell-aware formatting, clicks, scrolling, and layout constraints.
+- [Development, Testing, and Operations](development.md) - Mise-managed runbook for building, testing, releasing, installing, hot-reloading, and troubleshooting the pane-aware zellij-vertical-tab plugin and its Codex status bridge.
+- [zellij-vertical-tab Quickstart](quickstart.md) - Entry point for the pane-aware zellij-vertical-tab Rust/WASM plugin, including its adaptive tab hierarchy, per-pane Codex status, 32-column layout, source map, and maintainer workflows.
