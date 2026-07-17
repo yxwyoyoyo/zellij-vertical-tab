@@ -12,12 +12,95 @@
 //! Styling comes from `Text`/`ztext` sequences, which Zellij renders with the
 //! user's theme (active tab = `.selected()`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+use unicode_width::UnicodeWidthChar;
 use zellij_tile::prelude::*;
 
 const ARROW_UP: char = '▲';
 const ARROW_DOWN: char = '▼';
+const AGENT_STATUS_PIPE: &str = "vertical-tab-agent-status";
+const AGENT_STATUS_SYNC_UPDATE: &str = "vertical-tab-agent-status-sync-update";
+const AGENT_STATUS_SYNC_REQUEST: &str = "vertical-tab-agent-status-sync-request";
+const AGENT_STATUS_SYNC_SNAPSHOT: &str = "vertical-tab-agent-status-sync-snapshot";
+const AGENT_STATUS_VERSION: u8 = 1;
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AgentState {
+    Idle,
+    Working,
+    Waiting,
+    Done,
+    Clear,
+}
+
+impl AgentState {
+    fn glyph(self) -> &'static str {
+        match self {
+            Self::Idle => "○",
+            Self::Working => "●",
+            Self::Waiting => "?",
+            Self::Done => "✓",
+            Self::Clear => "",
+        }
+    }
+
+    fn priority(self) -> u8 {
+        match self {
+            Self::Waiting => 4,
+            Self::Working => 3,
+            Self::Done => 2,
+            Self::Idle => 1,
+            Self::Clear => 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct AgentStatusPayload {
+    version: u8,
+    pane_id: String,
+    session_id: String,
+    state: AgentState,
+    updated_at_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AgentStatusSnapshot {
+    version: u8,
+    records: Vec<AgentStatusPayload>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentRecord {
+    session_id: String,
+    state: AgentState,
+    updated_at_ms: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AgentStatusUpdate {
+    pane_id: u32,
+    record: AgentRecord,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TabAgentSummary {
+    state: AgentState,
+    count: usize,
+}
+
+impl TabAgentSummary {
+    fn badge(self) -> String {
+        if self.count > 1 {
+            format!("{}{}", self.state.glyph(), self.count)
+        } else {
+            self.state.glyph().to_owned()
+        }
+    }
+}
 
 // `host_run_plugin_command` is normally provided by the Zellij wasm runtime.
 // This stub lets host-target builds (`cargo test`, `cargo check`) link; it is
@@ -35,6 +118,14 @@ struct State {
     scroll_offset: usize,
     /// Content height in rows, cached from the last `render`.
     rows: usize,
+    /// Current tab position for every terminal pane reported by Zellij.
+    pane_tabs: HashMap<u32, usize>,
+    /// Most recent top-level Codex session status for each terminal pane.
+    agent_records: HashMap<u32, AgentRecord>,
+    /// This sidebar instance's session-unique Zellij plugin ID.
+    plugin_id: Option<u32>,
+    /// Other sidebar plugin instances discovered across the session's tabs.
+    peer_plugin_ids: HashSet<u32>,
     /// Whether `set_selectable(false)` has been applied yet.
     unselectable_set: bool,
 }
@@ -43,11 +134,18 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
+        self.plugin_id = Some(get_plugin_ids().plugin_id);
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
+            PermissionType::ReadCliPipes,
+            PermissionType::MessageAndLaunchOtherPlugins,
         ]);
-        subscribe(&[EventType::TabUpdate, EventType::Mouse]);
+        subscribe(&[
+            EventType::TabUpdate,
+            EventType::PaneUpdate,
+            EventType::Mouse,
+        ]);
         // NOTE: set_selectable(false) is NOT called here. On zellij 0.44,
         // calling it during initial session startup can kill the client when
         // the plugin pane lives in a default_tab_template; deferring it to the
@@ -85,7 +183,30 @@ impl ZellijPlugin for State {
                         clamp_offset(self.tabs.len(), self.scroll_offset, self.rows);
                 }
                 true
-            },
+            }
+            Event::PaneUpdate(pane_manifest) => {
+                let pane_tabs = terminal_pane_tabs(&pane_manifest);
+                let records_removed =
+                    remove_missing_agent_records(&mut self.agent_records, &pane_tabs);
+                let panes_changed = pane_tabs != self.pane_tabs;
+                self.pane_tabs = pane_tabs;
+                let peers = self
+                    .plugin_id
+                    .map(|plugin_id| sidebar_plugin_peers(&pane_manifest, plugin_id))
+                    .unwrap_or_default();
+                for peer_id in peers.difference(&self.peer_plugin_ids) {
+                    if let Some(plugin_id) = self.plugin_id {
+                        send_plugin_message(
+                            *peer_id,
+                            AGENT_STATUS_SYNC_REQUEST,
+                            plugin_id.to_string(),
+                        );
+                    }
+                }
+                let peers_changed = peers != self.peer_plugin_ids;
+                self.peer_plugin_ids = peers;
+                records_removed || panes_changed || peers_changed
+            }
             Event::Mouse(mouse) => match mouse {
                 Mouse::LeftClick(line, _col) => {
                     // Mouse coordinates are 0-based content cells; `line` is
@@ -100,18 +221,52 @@ impl ZellijPlugin for State {
                     }
                     // The resulting TabUpdate triggers the re-render.
                     false
-                },
+                }
                 Mouse::ScrollUp(_) => {
                     let new_offset = self.scroll_offset.saturating_sub(1);
                     std::mem::replace(&mut self.scroll_offset, new_offset) != new_offset
-                },
+                }
                 Mouse::ScrollDown(_) => {
                     let new_offset =
                         clamp_offset(self.tabs.len(), self.scroll_offset + 1, self.rows);
                     std::mem::replace(&mut self.scroll_offset, new_offset) != new_offset
-                },
+                }
                 _ => false,
             },
+            _ => false,
+        }
+    }
+
+    fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        let Some(payload) = pipe_message.payload.as_deref() else {
+            return false;
+        };
+        match pipe_message.name.as_str() {
+            AGENT_STATUS_PIPE => {
+                let Some(update) = parse_agent_status(payload) else {
+                    return false;
+                };
+                let changed = apply_agent_status(&mut self.agent_records, update);
+                for peer_id in &self.peer_plugin_ids {
+                    send_plugin_message(*peer_id, AGENT_STATUS_SYNC_UPDATE, payload.to_owned());
+                }
+                changed
+            }
+            AGENT_STATUS_SYNC_UPDATE => parse_agent_status(payload)
+                .is_some_and(|update| apply_agent_status(&mut self.agent_records, update)),
+            AGENT_STATUS_SYNC_REQUEST => {
+                let Ok(requester_id) = payload.parse::<u32>() else {
+                    return false;
+                };
+                if Some(requester_id) == self.plugin_id {
+                    return false;
+                }
+                if let Some(snapshot) = serialize_agent_snapshot(&self.agent_records) {
+                    send_plugin_message(requester_id, AGENT_STATUS_SYNC_SNAPSHOT, snapshot);
+                }
+                false
+            }
+            AGENT_STATUS_SYNC_SNAPSHOT => apply_agent_snapshot(&mut self.agent_records, payload),
             _ => false,
         }
     }
@@ -130,6 +285,7 @@ impl ZellijPlugin for State {
         let visible_count = rows.min(self.tabs.len() - offset);
         // Keep indices right-aligned even when the count rolls past 9.
         let index_width = self.tabs.len().to_string().len();
+        let summaries = aggregate_agent_statuses(&self.agent_records, &self.pane_tabs);
 
         for i in 0..visible_count {
             let tab = &self.tabs[offset + i];
@@ -140,12 +296,181 @@ impl ZellijPlugin for State {
             } else {
                 ' '
             };
-            let row = format_row(lead, tab.position + 1, index_width, &tab.name, cols);
+            let badge = summaries.get(&tab.position).map(|summary| summary.badge());
+            let row = format_row(
+                lead,
+                tab.position + 1,
+                index_width,
+                &tab.name,
+                badge.as_deref(),
+                cols,
+            );
             let text = Text::new(row);
             let text = if tab.active { text.selected() } else { text };
             print_text_with_coordinates(text, 0, i, Some(cols), Some(1));
         }
     }
+}
+
+fn parse_terminal_pane_id(value: &str) -> Option<u32> {
+    let digits = value.strip_prefix("terminal_").unwrap_or(value);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn parse_agent_status(payload: &str) -> Option<AgentStatusUpdate> {
+    let payload: AgentStatusPayload = serde_json::from_str(payload).ok()?;
+    if payload.version != AGENT_STATUS_VERSION || payload.session_id.trim().is_empty() {
+        return None;
+    }
+    Some(AgentStatusUpdate {
+        pane_id: parse_terminal_pane_id(&payload.pane_id)?,
+        record: AgentRecord {
+            session_id: payload.session_id,
+            state: payload.state,
+            updated_at_ms: payload.updated_at_ms,
+        },
+    })
+}
+
+fn serialize_agent_snapshot(records: &HashMap<u32, AgentRecord>) -> Option<String> {
+    let mut records = records
+        .iter()
+        .map(|(pane_id, record)| AgentStatusPayload {
+            version: AGENT_STATUS_VERSION,
+            pane_id: format!("terminal_{pane_id}"),
+            session_id: record.session_id.clone(),
+            state: record.state,
+            updated_at_ms: record.updated_at_ms,
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|left, right| left.pane_id.cmp(&right.pane_id));
+    serde_json::to_string(&AgentStatusSnapshot {
+        version: AGENT_STATUS_VERSION,
+        records,
+    })
+    .ok()
+}
+
+fn apply_agent_snapshot(records: &mut HashMap<u32, AgentRecord>, payload: &str) -> bool {
+    let Ok(snapshot) = serde_json::from_str::<AgentStatusSnapshot>(payload) else {
+        return false;
+    };
+    if snapshot.version != AGENT_STATUS_VERSION {
+        return false;
+    }
+    snapshot.records.into_iter().fold(false, |changed, record| {
+        let update = serde_json::to_string(&record)
+            .ok()
+            .and_then(|record| parse_agent_status(&record));
+        update
+            .map(|update| apply_agent_status(records, update) || changed)
+            .unwrap_or(changed)
+    })
+}
+
+fn send_plugin_message(destination_plugin_id: u32, name: &str, payload: String) {
+    pipe_message_to_plugin(
+        MessageToPlugin::new(name)
+            .with_destination_plugin_id(destination_plugin_id)
+            .with_payload(payload),
+    );
+}
+
+fn apply_agent_status(records: &mut HashMap<u32, AgentRecord>, update: AgentStatusUpdate) -> bool {
+    if records
+        .get(&update.pane_id)
+        .is_some_and(|current| update.record.updated_at_ms < current.updated_at_ms)
+    {
+        return false;
+    }
+
+    if update.record.state == AgentState::Clear
+        && records
+            .get(&update.pane_id)
+            .is_some_and(|current| current.session_id != update.record.session_id)
+    {
+        return false;
+    }
+
+    if records.get(&update.pane_id) == Some(&update.record) {
+        return false;
+    }
+    records.insert(update.pane_id, update.record);
+    true
+}
+
+fn terminal_pane_tabs(pane_manifest: &PaneManifest) -> HashMap<u32, usize> {
+    pane_manifest
+        .panes
+        .iter()
+        .flat_map(|(tab_position, panes)| {
+            panes
+                .iter()
+                .filter(|pane| !pane.is_plugin)
+                .map(|pane| (pane.id, *tab_position))
+        })
+        .collect()
+}
+
+fn sidebar_plugin_peers(pane_manifest: &PaneManifest, plugin_id: u32) -> HashSet<u32> {
+    let plugin_url = pane_manifest
+        .panes
+        .values()
+        .flatten()
+        .find(|pane| pane.is_plugin && pane.id == plugin_id)
+        .and_then(|pane| pane.plugin_url.as_deref());
+    let Some(plugin_url) = plugin_url else {
+        return HashSet::new();
+    };
+    pane_manifest
+        .panes
+        .values()
+        .flatten()
+        .filter(|pane| {
+            pane.is_plugin && pane.id != plugin_id && pane.plugin_url.as_deref() == Some(plugin_url)
+        })
+        .map(|pane| pane.id)
+        .collect()
+}
+
+fn remove_missing_agent_records(
+    records: &mut HashMap<u32, AgentRecord>,
+    pane_tabs: &HashMap<u32, usize>,
+) -> bool {
+    let old_count = records.len();
+    records.retain(|pane_id, _| pane_tabs.contains_key(pane_id));
+    old_count != records.len()
+}
+
+fn aggregate_agent_statuses(
+    records: &HashMap<u32, AgentRecord>,
+    pane_tabs: &HashMap<u32, usize>,
+) -> HashMap<usize, TabAgentSummary> {
+    let mut summaries: HashMap<usize, TabAgentSummary> = HashMap::new();
+    for (pane_id, record) in records {
+        if record.state == AgentState::Clear {
+            continue;
+        }
+        let Some(tab_position) = pane_tabs.get(pane_id) else {
+            continue;
+        };
+        summaries
+            .entry(*tab_position)
+            .and_modify(|summary| {
+                summary.count += 1;
+                if record.state.priority() > summary.state.priority() {
+                    summary.state = record.state;
+                }
+            })
+            .or_insert(TabAgentSummary {
+                state: record.state,
+                count: 1,
+            });
+    }
+    summaries
 }
 
 /// Largest valid scroll offset: 0 when everything fits.
@@ -171,20 +496,49 @@ fn visible_window(tab_count: usize, active: Option<usize>, prev: usize, rows: us
     offset
 }
 
-/// Build one tab row: `<lead><right-aligned index> <name>` fitted to `width`.
-fn format_row(lead: char, index: usize, index_width: usize, name: &str, width: usize) -> String {
+/// Build one tab row with an optional right-aligned status badge.
+fn format_row(
+    lead: char,
+    index: usize,
+    index_width: usize,
+    name: &str,
+    badge: Option<&str>,
+    width: usize,
+) -> String {
     let body = format!("{}{:>iw$} {}", lead, index, name, iw = index_width);
-    fit_to_width(&body, width)
+    let Some(badge) = badge.filter(|badge| !badge.is_empty()) else {
+        return fit_to_width(&body, width);
+    };
+    let badge_width = display_width(badge);
+    if badge_width >= width {
+        return fit_to_width(badge, width);
+    }
+    let body_width = width - badge_width - 1;
+    format!("{} {}", fit_to_width(&body, body_width), badge)
 }
 
-/// Truncate to `width` chars and pad with spaces so row-wide styles (e.g.
-/// selected) span the whole row. Zellij additionally clips display overflow,
-/// so wide characters in `name` are handled at render time.
+fn display_width(value: &str) -> usize {
+    value
+        .chars()
+        .map(|character| character.width().unwrap_or(0))
+        .sum()
+}
+
+/// Truncate to `width` terminal cells and pad with spaces so row-wide styles
+/// (e.g. selected) span the whole row while preserving right-hand suffixes.
 fn fit_to_width(s: &str, width: usize) -> String {
-    let mut out: String = s.chars().take(width).collect();
-    let len = out.chars().count();
-    if len < width {
-        out.push_str(&" ".repeat(width - len));
+    let mut out = String::new();
+    let mut used = 0;
+    for character in s.chars() {
+        let character_width = character.width().unwrap_or(0);
+        if used + character_width > width {
+            break;
+        }
+        out.push(character);
+        used += character_width;
+    }
+    if used < width {
+        out.push_str(&" ".repeat(width - used));
     }
     out
 }
@@ -247,12 +601,309 @@ mod tests {
 
     #[test]
     fn row_format_pads_to_width() {
-        assert_eq!(format_row(' ', 3, 1, "work", 10), " 3 work   ");
+        assert_eq!(format_row(' ', 3, 1, "work", None, 10), " 3 work   ");
     }
 
     #[test]
     fn row_format_aligns_double_digit_indices() {
-        assert_eq!(format_row(ARROW_DOWN, 10, 2, "x", 8), "▼10 x   ");
-        assert_eq!(format_row(ARROW_UP, 9, 2, "x", 8), "▲ 9 x   ");
+        assert_eq!(format_row(ARROW_DOWN, 10, 2, "x", None, 8), "▼10 x   ");
+        assert_eq!(format_row(ARROW_UP, 9, 2, "x", None, 8), "▲ 9 x   ");
+    }
+
+    #[test]
+    fn parses_valid_status_payload() {
+        assert_eq!(
+            parse_agent_status(
+                r#"{"version":1,"pane_id":"terminal_7","session_id":"session-a","state":"working","updated_at_ms":42}"#,
+            ),
+            Some(AgentStatusUpdate {
+                pane_id: 7,
+                record: AgentRecord {
+                    session_id: "session-a".to_owned(),
+                    state: AgentState::Working,
+                    updated_at_ms: 42,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_or_unsupported_status_payloads() {
+        for payload in [
+            "not json",
+            r#"{"version":2,"pane_id":"terminal_7","session_id":"s","state":"working","updated_at_ms":1}"#,
+            r#"{"version":1,"pane_id":"plugin_7","session_id":"s","state":"working","updated_at_ms":1}"#,
+            r#"{"version":1,"pane_id":"terminal_7","session_id":"","state":"working","updated_at_ms":1}"#,
+            r#"{"version":1,"pane_id":"terminal_7","session_id":"s","state":"unknown","updated_at_ms":1}"#,
+        ] {
+            assert_eq!(parse_agent_status(payload), None, "payload: {payload}");
+        }
+    }
+
+    #[test]
+    fn status_update_replaces_session_and_rejects_stale_message() {
+        let mut records = HashMap::new();
+        let update = |session: &str, state, updated_at_ms| AgentStatusUpdate {
+            pane_id: 3,
+            record: AgentRecord {
+                session_id: session.to_owned(),
+                state,
+                updated_at_ms,
+            },
+        };
+
+        assert!(apply_agent_status(
+            &mut records,
+            update("old", AgentState::Working, 10)
+        ));
+        assert!(!apply_agent_status(
+            &mut records,
+            update("old", AgentState::Waiting, 9)
+        ));
+        assert!(apply_agent_status(
+            &mut records,
+            update("new", AgentState::Idle, 11)
+        ));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[&3].session_id, "new");
+        assert_eq!(records[&3].state, AgentState::Idle);
+    }
+
+    #[test]
+    fn clear_removes_current_record_but_not_when_stale() {
+        let mut records = HashMap::from([(
+            4,
+            AgentRecord {
+                session_id: "session".to_owned(),
+                state: AgentState::Done,
+                updated_at_ms: 20,
+            },
+        )]);
+        let clear = |updated_at_ms| AgentStatusUpdate {
+            pane_id: 4,
+            record: AgentRecord {
+                session_id: "session".to_owned(),
+                state: AgentState::Clear,
+                updated_at_ms,
+            },
+        };
+
+        assert!(!apply_agent_status(&mut records, clear(19)));
+        assert!(records.contains_key(&4));
+        assert!(apply_agent_status(&mut records, clear(20)));
+        assert_eq!(records[&4].state, AgentState::Clear);
+        assert!(!apply_agent_status(
+            &mut records,
+            AgentStatusUpdate {
+                pane_id: 4,
+                record: AgentRecord {
+                    session_id: "session".to_owned(),
+                    state: AgentState::Working,
+                    updated_at_ms: 19,
+                },
+            }
+        ));
+        assert_eq!(records[&4].state, AgentState::Clear);
+    }
+
+    #[test]
+    fn clear_from_old_session_does_not_remove_reused_pane() {
+        let mut records = HashMap::from([(
+            4,
+            AgentRecord {
+                session_id: "new-session".to_owned(),
+                state: AgentState::Working,
+                updated_at_ms: 20,
+            },
+        )]);
+        let old_clear = AgentStatusUpdate {
+            pane_id: 4,
+            record: AgentRecord {
+                session_id: "old-session".to_owned(),
+                state: AgentState::Clear,
+                updated_at_ms: 21,
+            },
+        };
+
+        assert!(!apply_agent_status(&mut records, old_clear));
+        assert_eq!(records[&4].session_id, "new-session");
+        assert_eq!(records[&4].state, AgentState::Working);
+    }
+
+    #[test]
+    fn pane_manifest_maps_only_terminal_panes() {
+        let manifest = PaneManifest {
+            panes: HashMap::from([(
+                2,
+                vec![
+                    PaneInfo {
+                        id: 8,
+                        is_plugin: false,
+                        ..Default::default()
+                    },
+                    PaneInfo {
+                        id: 9,
+                        is_plugin: true,
+                        ..Default::default()
+                    },
+                ],
+            )]),
+        };
+        assert_eq!(terminal_pane_tabs(&manifest), HashMap::from([(8, 2)]));
+    }
+
+    #[test]
+    fn clear_tombstones_are_not_aggregated() {
+        let records = HashMap::from([(
+            4,
+            AgentRecord {
+                session_id: "session".to_owned(),
+                state: AgentState::Clear,
+                updated_at_ms: 20,
+            },
+        )]);
+        let pane_tabs = HashMap::from([(4, 0)]);
+
+        assert!(aggregate_agent_statuses(&records, &pane_tabs).is_empty());
+    }
+
+    #[test]
+    fn discovers_only_sibling_sidebar_plugin_instances() {
+        let sidebar = "file:/plugins/zellij_vertical_tab.wasm";
+        let manifest = PaneManifest {
+            panes: HashMap::from([
+                (
+                    0,
+                    vec![PaneInfo {
+                        id: 2,
+                        is_plugin: true,
+                        plugin_url: Some(sidebar.to_owned()),
+                        ..Default::default()
+                    }],
+                ),
+                (
+                    1,
+                    vec![
+                        PaneInfo {
+                            id: 5,
+                            is_plugin: true,
+                            plugin_url: Some(sidebar.to_owned()),
+                            ..Default::default()
+                        },
+                        PaneInfo {
+                            id: 6,
+                            is_plugin: true,
+                            plugin_url: Some("zellij:status-bar".to_owned()),
+                            ..Default::default()
+                        },
+                    ],
+                ),
+            ]),
+        };
+
+        assert_eq!(sidebar_plugin_peers(&manifest, 2), HashSet::from([5]));
+        assert_eq!(sidebar_plugin_peers(&manifest, 5), HashSet::from([2]));
+        assert!(sidebar_plugin_peers(&manifest, 99).is_empty());
+    }
+
+    #[test]
+    fn pane_cleanup_removes_closed_pane_records() {
+        let record = |state| AgentRecord {
+            session_id: "session".to_owned(),
+            state,
+            updated_at_ms: 1,
+        };
+        let mut records = HashMap::from([
+            (1, record(AgentState::Working)),
+            (2, record(AgentState::Done)),
+        ]);
+        let pane_tabs = HashMap::from([(2, 0)]);
+
+        assert!(remove_missing_agent_records(&mut records, &pane_tabs));
+        assert_eq!(records.keys().copied().collect::<Vec<_>>(), vec![2]);
+        assert!(!remove_missing_agent_records(&mut records, &pane_tabs));
+    }
+
+    #[test]
+    fn aggregation_counts_panes_and_uses_state_precedence() {
+        let record = |state| AgentRecord {
+            session_id: "session".to_owned(),
+            state,
+            updated_at_ms: 1,
+        };
+        let records = HashMap::from([
+            (1, record(AgentState::Idle)),
+            (2, record(AgentState::Working)),
+            (3, record(AgentState::Waiting)),
+            (4, record(AgentState::Done)),
+        ]);
+        let pane_tabs = HashMap::from([(1, 0), (2, 0), (3, 0), (4, 1)]);
+
+        let summaries = aggregate_agent_statuses(&records, &pane_tabs);
+        assert_eq!(
+            summaries[&0],
+            TabAgentSummary {
+                state: AgentState::Waiting,
+                count: 3,
+            }
+        );
+        assert_eq!(summaries[&0].badge(), "?3");
+        assert_eq!(summaries[&1].badge(), "✓");
+    }
+
+    #[test]
+    fn snapshot_round_trip_merges_newer_records_only() {
+        let source = HashMap::from([
+            (
+                1,
+                AgentRecord {
+                    session_id: "one".to_owned(),
+                    state: AgentState::Idle,
+                    updated_at_ms: 10,
+                },
+            ),
+            (
+                2,
+                AgentRecord {
+                    session_id: "two".to_owned(),
+                    state: AgentState::Working,
+                    updated_at_ms: 20,
+                },
+            ),
+        ]);
+        let payload = serialize_agent_snapshot(&source).unwrap();
+        let mut destination = HashMap::from([(
+            1,
+            AgentRecord {
+                session_id: "newer".to_owned(),
+                state: AgentState::Waiting,
+                updated_at_ms: 11,
+            },
+        )]);
+
+        assert!(apply_agent_snapshot(&mut destination, &payload));
+        assert_eq!(destination[&1].session_id, "newer");
+        assert_eq!(destination[&1].state, AgentState::Waiting);
+        assert_eq!(destination[&2], source[&2]);
+        assert!(!apply_agent_snapshot(&mut destination, &payload));
+        assert!(!apply_agent_snapshot(
+            &mut destination,
+            r#"{"version":2,"records":[]}"#
+        ));
+    }
+
+    #[test]
+    fn badge_is_right_aligned_and_preserved_when_name_is_long() {
+        assert_eq!(format_row(' ', 1, 1, "work", Some("●"), 10), " 1 work  ●");
+        assert_eq!(
+            format_row(' ', 1, 1, "very-long-name", Some("?2"), 10),
+            " 1 very ?2"
+        );
+        assert_eq!(format_row(' ', 1, 1, "x", Some("?2"), 2), "?2");
+        assert_eq!(
+            format_row(' ', 1, 1, "界界界界", Some("●"), 10),
+            " 1 界界  ●"
+        );
+        assert_eq!(display_width(" 1 界界  ●"), 10);
     }
 }

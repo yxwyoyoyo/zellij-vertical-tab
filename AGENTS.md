@@ -1,6 +1,6 @@
 # AGENTS
 
-Zellij plugin (Rust → wasm32-wasip1) rendering tabs vertically in a 20-col side pane.
+Zellij plugin (Rust → wasm32-wasip1) rendering tabs vertically in a 24-col side pane.
 
 ## Commands
 
@@ -39,6 +39,8 @@ Keystrokes can be injected into the pipe (e.g. `printf 'y'` for the permission p
 ## Structure
 
 - `src/main.rs` — the whole plugin (state, update, render, pure helpers + unit tests)
+- `hooks/codex/` — source, user-level configuration template, and tests for the Codex lifecycle-to-Zellij status bridge
+- `openspec/` — baseline specifications and active change artifacts
 - `zellij.kdl` — dev layout (left sidebar + status-bar, no horizontal tab-bar)
 - `tasks/` — todo/lessons notes
 
