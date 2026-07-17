@@ -36,13 +36,24 @@ enum AgentState {
     Clear,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BadgeColor {
+    Dim,
+    Emphasis(usize),
+    Success,
+    None,
+}
+
 impl AgentState {
     fn glyph(self) -> &'static str {
+        // These Font Awesome glyphs are native to Nerd Font Mono builds. They
+        // share identical vertical metrics, avoiding the baseline mismatch
+        // caused when geometric Unicode symbols come from a fallback font.
         match self {
-            Self::Idle => "○",
-            Self::Working => "●",
-            Self::Waiting => "?",
-            Self::Done => "✓",
+            Self::Idle => "",
+            Self::Working => "",
+            Self::Waiting => "",
+            Self::Done => "",
             Self::Clear => "",
         }
     }
@@ -54,6 +65,16 @@ impl AgentState {
             Self::Done => 2,
             Self::Idle => 1,
             Self::Clear => 0,
+        }
+    }
+
+    fn badge_color(self) -> BadgeColor {
+        match self {
+            Self::Idle => BadgeColor::Dim,
+            Self::Working => BadgeColor::Emphasis(1), // theme cyan
+            Self::Waiting => BadgeColor::Emphasis(0), // theme orange
+            Self::Done => BadgeColor::Success,        // theme green
+            Self::Clear => BadgeColor::None,
         }
     }
 }
@@ -296,7 +317,8 @@ impl ZellijPlugin for State {
             } else {
                 ' '
             };
-            let badge = summaries.get(&tab.position).map(|summary| summary.badge());
+            let summary = summaries.get(&tab.position);
+            let badge = summary.map(|summary| summary.badge());
             let row = format_row(
                 lead,
                 tab.position + 1,
@@ -305,7 +327,10 @@ impl ZellijPlugin for State {
                 badge.as_deref(),
                 cols,
             );
-            let text = Text::new(row);
+            let mut text = Text::new(row);
+            if let (Some(summary), Some(badge)) = (summary, badge.as_deref()) {
+                text = color_agent_badge(text, summary.state, badge.chars().count());
+            }
             let text = if tab.active { text.selected() } else { text };
             print_text_with_coordinates(text, 0, i, Some(cols), Some(1));
         }
@@ -522,6 +547,16 @@ fn display_width(value: &str) -> usize {
         .chars()
         .map(|character| character.width().unwrap_or(0))
         .sum()
+}
+
+fn color_agent_badge(text: Text, state: AgentState, badge_chars: usize) -> Text {
+    let badge_start = text.len().saturating_sub(badge_chars);
+    match state.badge_color() {
+        BadgeColor::Dim => text.dim_range(badge_start..),
+        BadgeColor::Emphasis(level) => text.color_range(level, badge_start..),
+        BadgeColor::Success => text.success_color_range(badge_start..),
+        BadgeColor::None => text,
+    }
 }
 
 /// Truncate to `width` terminal cells and pad with spaces so row-wide styles
@@ -847,8 +882,8 @@ mod tests {
                 count: 3,
             }
         );
-        assert_eq!(summaries[&0].badge(), "?3");
-        assert_eq!(summaries[&1].badge(), "✓");
+        assert_eq!(summaries[&0].badge(), "3");
+        assert_eq!(summaries[&1].badge(), "");
     }
 
     #[test]
@@ -894,16 +929,45 @@ mod tests {
 
     #[test]
     fn badge_is_right_aligned_and_preserved_when_name_is_long() {
-        assert_eq!(format_row(' ', 1, 1, "work", Some("●"), 10), " 1 work  ●");
+        assert_eq!(format_row(' ', 1, 1, "work", Some(""), 10), " 1 work  ");
         assert_eq!(
-            format_row(' ', 1, 1, "very-long-name", Some("?2"), 10),
-            " 1 very ?2"
+            format_row(' ', 1, 1, "very-long-name", Some("2"), 10),
+            " 1 very 2"
         );
-        assert_eq!(format_row(' ', 1, 1, "x", Some("?2"), 2), "?2");
+        assert_eq!(format_row(' ', 1, 1, "x", Some("2"), 2), "2");
         assert_eq!(
-            format_row(' ', 1, 1, "界界界界", Some("●"), 10),
-            " 1 界界  ●"
+            format_row(' ', 1, 1, "界界界界", Some(""), 10),
+            " 1 界界  "
         );
-        assert_eq!(display_width(" 1 界界  ●"), 10);
+        assert_eq!(display_width(" 1 界界  "), 10);
+    }
+
+    #[test]
+    fn status_glyphs_are_single_cell_nerd_font_icons() {
+        for state in [
+            AgentState::Idle,
+            AgentState::Working,
+            AgentState::Waiting,
+            AgentState::Done,
+        ] {
+            assert_eq!(display_width(state.glyph()), 1);
+        }
+    }
+
+    #[test]
+    fn status_states_use_distinct_theme_colors() {
+        assert_eq!(AgentState::Idle.badge_color(), BadgeColor::Dim);
+        assert_eq!(AgentState::Working.badge_color(), BadgeColor::Emphasis(1));
+        assert_eq!(AgentState::Waiting.badge_color(), BadgeColor::Emphasis(0));
+        assert_eq!(AgentState::Done.badge_color(), BadgeColor::Success);
+        assert_eq!(AgentState::Clear.badge_color(), BadgeColor::None);
+    }
+
+    #[test]
+    fn complete_badge_is_colored_and_selected_row_is_retained() {
+        let text = color_agent_badge(Text::new(" 1 work  2"), AgentState::Working, 2).selected();
+        let serialized = text.serialize();
+
+        assert!(serialized.starts_with("x$9,10$"));
     }
 }

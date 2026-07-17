@@ -4,9 +4,9 @@ A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertical
 
 ```
  1 Tab #1            ┐
- 2 editor          ● │  24-column side pane
- 3 tests           ?2│  (active row highlighted
-▲12 long-tab-name  ○ ┘   with your theme)
+ 2 editor           │  24-column side pane
+ 3 tests           2│  (active row highlighted
+▲12 long-tab-name   ┘   with your theme)
 ```
 
 ## Features
@@ -16,13 +16,14 @@ A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertical
 - Left-click a row to switch to that tab
 - Scroll wheel moves the list when tabs overflow the pane height; `▲`/`▼` markers indicate hidden rows
 - The active tab is always kept in view (follows keyboard tab switching)
-- Codex lifecycle status shown as a right-aligned badge: `○` idle, `●` working, `?` waiting for permission, or `✓` answer ready
-- Multiple Codex panes in one tab are aggregated without an agent-name prefix (for example, `?2`)
+- Codex lifecycle status shown as a right-aligned, vertically aligned, theme-colored Nerd Font badge: dim `` idle, cyan `` working, orange `` waiting for permission, or green `` answer ready
+- Multiple Codex panes in one tab are aggregated without an agent-name prefix (for example, `2`)
 
 ## Requirements
 
 - zellij **0.44.3** (the `zellij-tile` crate version must match the zellij binary — see `Cargo.toml`)
 - Rust with the `wasm32-wasip1` target
+- A Nerd Font for the agent-status icons (the tested iTerm profile uses `0xProto Nerd Font Mono`)
 
 ## Build
 
@@ -72,14 +73,16 @@ Codex runs the lifecycle bridge at session, prompt, pre-tool, permission, and st
 
    | Badge | State |
    | --- | --- |
-   | `○` | Session started and is idle |
-   | `●` | Codex is working |
-   | `?` | Codex is waiting for permission |
-   | `✓` | Codex has delivered an answer |
+   | `` | Session started and is idle |
+   | `` | Codex is working |
+   | `` | Codex is waiting for permission |
+   | `` | Codex has delivered an answer |
 
-Status is tracked per terminal pane. If a tab contains multiple Codex panes, the badge appends the total pane count and uses `waiting`, then `working`, then `done`, then `idle` precedence. For example, one waiting pane and two working panes render as `?3`.
+Status is tracked per terminal pane. If a tab contains multiple Codex panes, the badge appends the total pane count and uses `waiting`, then `working`, then `done`, then `idle` precedence. For example, one waiting pane and two working panes render as `3`.
 
-Closing a pane or exiting Codex clears its status, and starting a new Codex session in a reused pane replaces the old session. Codex initializes lifecycle hooks lazily, so a newly opened TUI may not show `○` until its first prompt is submitted. Exit cleanup is best-effort if the bridge cannot identify the Codex ancestor process; closing the pane still clears the record.
+Badge colors come from the active Zellij theme: idle is dimmed, working uses cyan emphasis, waiting uses orange emphasis, and done uses the success color. Selected tabs retain their full-row selected styling.
+
+Closing a pane or exiting Codex clears its status, and starting a new Codex session in a reused pane replaces the old session. Codex initializes lifecycle hooks lazily, so a newly opened TUI may not show `` until its first prompt is submitted. Exit cleanup is best-effort if the bridge cannot identify the Codex ancestor process; closing the pane still clears the record.
 
 ## Install for everyday use
 
