@@ -53,6 +53,14 @@ mise run status -- terminal_0 <codex-session-id> done Hub
 
 Starting a new prompt also republishes state through the normal Codex hooks.
 
+Sidebar resizing is startup-sensitive. With Zellij mouse handling enabled (the
+default), drag the tiled boundary between the sidebar and content to change the
+sidebar width. Pane frames are optional: showing them makes the boundary
+visible, while hiding them leaves the same one-cell drag target. The width
+belongs to that tab only and a new tab starts at the layout's `13%` default.
+Test layout or resizing changes in a disposable fresh session; hot reload does
+not reconstruct pane geometry.
+
 ## Feature loop
 
 1. Start from a clean, current `main` and create a feature branch.
@@ -85,6 +93,7 @@ Starting a new prompt also republishes state through the normal Codex hooks.
 | Pure formatting or row model | `mise run test` | `mise run check`, live reload |
 | Codex hook/protocol | `mise run test` | `mise run check`, two-session status test |
 | Pane focus/scroll/input | `mise run test`, live reload | `mise run check`, multi-tab/multi-pane test |
+| Sidebar layout/resize | fresh disposable session | drag the sidebar/content boundary and compare pane geometry before/after |
 | Layout/lifecycle/permissions | targeted tests | `mise run check`, fresh headless or interactive session |
 | Zellij version/ABI | host tests plus WASM build | full fresh-session matrix; versions must match |
 | Documentation only | link and terminology review | `git diff --check` |

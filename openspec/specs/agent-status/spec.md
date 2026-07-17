@@ -1,7 +1,9 @@
 # agent-status Specification
 
 ## Purpose
-TBD - created by archiving change add-agent-status. Update Purpose after archive.
+
+Define how Codex lifecycle state is published to Zellij, validated and tracked per terminal pane, synchronized across sidebar instances, cleared with pane or session lifecycle changes, and rendered as pane-aware status badges.
+
 ## Requirements
 ### Requirement: Codex lifecycle status publication
 The project SHALL provide globally installable Codex lifecycle and completion-notifier bridges that translate supported events into versioned status messages for the Zellij terminal pane that owns the Codex session, regardless of the session's working directory.

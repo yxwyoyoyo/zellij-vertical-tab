@@ -1,7 +1,7 @@
 ---
 type: Engineering Runbook
 title: Development, Testing, and Operations
-description: Mise-managed runbook for building, testing, releasing, installing, hot-reloading, and troubleshooting the pane-aware zellij-vertical-tab plugin and its Codex status bridge.
+description: Mise-managed runbook for building, testing, releasing, installing, hot-reloading, fresh-session layout verification, and troubleshooting the pane-aware zellij-vertical-tab plugin and its Codex status bridge.
 resource: AGENTS.md
 tags: [development, testing, operations, mise, zellij, codex]
 ---
@@ -96,7 +96,7 @@ Keep runtime host calls out of these tests unless a proper mock layer is introdu
 
 Always pair host tests with a WASM build because host success does not prove the runtime target or `_start` module shape. `mise run check` is the complete pre-PR gate: formatting, Rust and Python tests, Clippy with warnings denied, debug WASM, strict validation of all OpenSpec artifacts, and `git diff --check`. `mise run release` depends on that gate before building release WASM. The archived pane-aware completion record (`openspec/changes/archive/2026-07-17-nest-panes-under-tabs/tasks.md`) provides additional live/headless verification evidence.
 
-The current behavior contract is `openspec/specs/`. Completed proposals and rationale are under `openspec/changes/archive/`; there is no active change directory at the current merged `main` head.
+The merged behavior contract is `openspec/specs/`, and completed proposals and rationale are under `openspec/changes/archive/`. The accepted flexible-layout and native-boundary-drag change, including its disposable-session verification and completed local gate, is archived at `openspec/changes/archive/2026-07-18-add-mouse-resizable-sidebar/`.
 
 ## Runtime verification
 
@@ -111,14 +111,15 @@ zellij kill-session <name>
 
 Unset the Zellij variables so the process does not think it is nested. The input pipe may approve permissions with `y` and inject SGR mouse sequences. A minimum pane-aware pass verifies:
 
-1. startup survives permission grant and renders a 32-column sidebar with no horizontal tab bar;
-2. one-pane tabs stay compact, while a multi-pane tab lists all terminal panes and excludes plugin panes;
-3. pane children follow tiled/floating/suppressed visual order and the focused visible-layer child is selected;
-4. one-pane status appears on the tab, multi-pane statuses remain on exact children, and no aggregate/count appears;
-5. a new tab's sidebar obtains current statuses from an existing peer;
-6. a tab-row click switches tabs, while a pane-row click focuses that exact pane, including after scrolling;
-7. long ASCII/wide names ellipsize, badges remain intact, and every normal-width row keeps its rightmost cell blank;
-8. wheel overflow and keyboard tab switching operate on the flattened hierarchy.
+1. startup survives permission grant and renders a sidebar initially sized to 13% with no horizontal tab bar;
+2. with normal Zellij mouse handling, dragging the sidebar/content boundary changes the current tab's sidebar width even when pane frames are hidden; a new tab starts at 13% rather than inheriting that width;
+3. one-pane tabs stay compact, while a multi-pane tab lists all terminal panes and excludes plugin panes;
+4. pane children follow tiled/floating/suppressed visual order and the focused visible-layer child is selected;
+5. one-pane status appears on the tab, multi-pane statuses remain on exact children, and no aggregate/count appears;
+6. a new tab's sidebar obtains current statuses from an existing peer;
+7. a tab-row click switches tabs, while a pane-row click focuses that exact pane, including after scrolling;
+8. long ASCII/wide names ellipsize, badges remain intact, and every normal-width row keeps its rightmost cell blank;
+9. wheel overflow and keyboard tab switching operate on the flattened hierarchy.
 
 ## Runbook
 
@@ -140,6 +141,10 @@ Check pane cardinality first. Exactly one terminal pane owns the parent badge; m
 ### Row touches the right edge or clips a badge
 
 Keep `ROW_RIGHT_PADDING = 1`, reserve badge width before fitting the body, and exclude the trailing cell from the badge color range. Use terminal-cell width rather than Rust character count, and extend narrow/wide-character tests with the change.
+
+### Sidebar does not resize
+
+Confirm the layout uses flexible `size="13%"`, not fixed `size=32`, and that Zellij mouse handling is enabled. Drag the one-cell **boundary between the sidebar and content**. Pane frames may be enabled to make that boundary visible, but neither pane frames nor advanced mouse actions are required for resizing. Start a fresh session after changing layout or configuration: hot reload replaces plugin code but does not reconstruct existing pane geometry. Width changes are tab-local and intentionally not persisted.
 
 ### Client exits at startup
 
