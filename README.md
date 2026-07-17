@@ -1,6 +1,6 @@
 # zellij-vertical-tab
 
-A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertically** in a fixed-width side pane, replacing the horizontal tab-bar. Multi-pane tabs include indented pane rows so agent state remains attached to the pane that owns it.
+A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertically** in a mouse-resizable side pane, replacing the horizontal tab-bar. Multi-pane tabs include indented pane rows so agent state remains attached to the pane that owns it.
 
 ```
  1 editor           ┐
@@ -103,7 +103,7 @@ Closing a pane or exiting Codex clears its status, and starting a new Codex sess
    layout {
        default_tab_template {
            pane split_direction="vertical" {
-               pane size=32 borderless=true {
+               pane size="13%" borderless=true {
                    plugin location="file:~/.config/zellij/plugins/zellij_vertical_tab.wasm"
                }
                pane {
@@ -122,6 +122,14 @@ Closing a pane or exiting Codex clears its status, and starting a new Codex sess
    - This removes the horizontal `zellij:tab-bar` entirely; keep it in the template if you want both.
    - New tabs (`Ctrl t n`) inherit the template, so the side pane appears everywhere.
 
+3. Start a fresh Zellij session, then drag the tiled boundary between the
+   sidebar and content to resize the sidebar. Zellij mouse handling is enabled
+   by default. Pane frames are optional: `pane_frames true` makes the boundary
+   visible as the content pane's left frame, while hidden frames leave the same
+   one-cell drag target. The sidebar stays borderless and unfocusable. Width is
+   local to each tab and is not persisted, so a new tab starts again at the
+   layout's `13%` width.
+
 ## Development
 
 ```sh
@@ -136,7 +144,7 @@ verification, status restoration, documentation, and release workflows.
 ## How it works
 
 - The plugin is a **bin crate**: zellij requires the wasm module to export `_start` (command-style module), which only bin targets provide. `register_plugin!` generates `main()`.
-- `set_selectable(false)` makes the pane unfocusable (same pattern as the built-in tab-bar) and is what makes a fixed `size=32` pane stable. On zellij 0.44 it must not be called during initial startup when the pane lives in a `default_tab_template`, so the plugin defers it to the first event. Unselectable panes still receive mouse events.
+- `set_selectable(false)` makes the pane unfocusable (same pattern as the built-in tab-bar). On zellij 0.44 it must not be called during initial startup when the pane lives in a `default_tab_template`, so the plugin defers it to the first event. The percentage layout keeps the pane flexible so Zellij's native boundary drag can resize it.
 - Rendering uses `Text`/`print_text_with_coordinates` (`ztext` APC sequences) so colors always follow the user's theme; active tab and focused pane rows are `.selected()` and padded to full width.
 - `PaneUpdate` associates terminal panes with tabs and supplies pane titles, focus, layers, and geometry. The plugin flattens tabs and multi-pane children into the same row model used by rendering, scrolling, and mouse input.
 - The `vertical-tab-agent-status` Zellij pipe carries versioned lifecycle messages from the user-level Codex hook. The plugin keeps only the newest session record per terminal pane and places it on the compact tab row or exact pane child as appropriate.

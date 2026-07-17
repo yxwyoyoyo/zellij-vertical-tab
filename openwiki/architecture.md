@@ -1,7 +1,7 @@
 ---
 type: Architecture Guide
 title: Plugin Architecture and Domain Model
-description: Runtime architecture of the pane-aware Zellij sidebar, covering adaptive tab and pane rows, terminal-pane Codex status ownership, peer synchronization, cell-aware formatting, clicks, scrolling, and layout constraints.
+description: Runtime architecture of the pane-aware Zellij sidebar, covering adaptive rows, terminal-pane Codex status ownership, peer synchronization, rendering and input, and Zellij-owned mouse-resizable layout constraints.
 resource: src/main.rs
 tags: [architecture, zellij, rust, wasm, codex, panes]
 ---
@@ -111,14 +111,16 @@ The click itself returns `false`; the resulting `TabUpdate` or `PaneUpdate` driv
 
 ## Runtime and layout constraints
 
-`zellij.kdl` uses `default_tab_template` to place a borderless **32-column** sidebar beside `pane { children }`, with `zellij:status-bar` below and no horizontal tab bar. New tabs inherit this template and therefore create new synchronized sidebar instances.
+`zellij.kdl` uses `default_tab_template` to place a borderless sidebar with flexible `size="13%"` beside `pane { children }`, with `zellij:status-bar` below and no horizontal tab bar. The percentage approximates the former 32 columns on the tested 245-column viewport, but unlike a fixed integer dimension it permits Zellij's tiled grid to resize the boundary. New tabs inherit the template and create new synchronized sidebar instances at the configured initial percentage.
+
+The plugin does not implement dragging or persist geometry. With Zellij mouse handling enabled (the default), the one-cell tiled boundary between the sidebar and content is the native drag handle; the sidebar itself remains borderless and unselectable. Pane frames are optional: showing them draws the boundary as the content pane's left frame, while hiding them leaves the same hit target. `advanced_mouse_actions` is not required for resizing. Zellij owns subsequent width per tab, so resizing one tab does not synchronize another tab and a new tab starts at 13%.
 
 Two crash-derived constraints stabilize the layout on Zellij 0.44:
 
 - `set_selectable(false)` must be deferred from `load()` to the first event.
 - `children` must remain wrapped in its own pane beside the unselectable plugin pane.
 
-The sidebar remains mouse-capable after becoming unselectable. Layout or lifecycle changes require a real Zellij regression pass from [development and operations](development.md#runtime-verification).
+Layout geometry is created when Zellij builds the tab. Hot reload cannot convert an existing fixed layout or restore the initial percentage, so layout and drag changes require a fresh-session regression pass from [development and operations](development.md#runtime-verification).
 
 ## Integration points and safe changes
 
