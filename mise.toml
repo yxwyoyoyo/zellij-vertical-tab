@@ -1,0 +1,75 @@
+[tools]
+rust = "1.97.1"
+node = "26.5.0"
+
+[tasks.setup]
+description = "Install the WASM target and project CLI tools"
+run = [
+  "rustup target add wasm32-wasip1",
+  "npm install --global @fission-ai/openspec@1.6.0 openwiki@0.2.0",
+]
+
+[tasks.test]
+description = "Run Rust unit tests and Codex bridge tests"
+run = [
+  "cargo test",
+  "python3 -m unittest discover -s hooks/codex -p 'test_*.py'",
+]
+
+[tasks.build]
+description = "Build the debug WASM plugin"
+run = "cargo build --target wasm32-wasip1"
+
+[tasks.spec]
+description = "Strictly validate active and baseline OpenSpec artifacts"
+run = "openspec validate --all --strict"
+
+[tasks.check]
+description = "Run the complete local pre-PR gate"
+run = [
+  "cargo fmt -- --check",
+  "cargo test",
+  "python3 -m unittest discover -s hooks/codex -p 'test_*.py'",
+  "cargo clippy --all-targets -- -D warnings",
+  "cargo build --target wasm32-wasip1",
+  "openspec validate --all --strict",
+  "git diff --check",
+]
+
+[tasks.dev]
+description = "Build and launch a fresh Zellij development session"
+depends = ["build"]
+run = "zellij -l zellij.kdl"
+
+[tasks.reload]
+description = "Build and hot-reload debug WASM; optionally pass a Zellij session"
+depends = ["build"]
+run = "./scripts/reload-plugin debug"
+
+[tasks.release]
+description = "Run the full gate and build release WASM"
+depends = ["check"]
+run = "cargo build --release --target wasm32-wasip1"
+
+[tasks.install]
+description = "Build and install release WASM into the user Zellij plugin directory"
+depends = ["release"]
+run = '''
+plugin_dir="${ZELLIJ_PLUGIN_DIR:-$HOME/.config/zellij/plugins}"
+mkdir -p "$plugin_dir"
+install -m 644 target/wasm32-wasip1/release/zellij_vertical_tab.wasm \
+  "$plugin_dir/zellij_vertical_tab.wasm"
+'''
+
+[tasks.deploy]
+description = "Install release WASM and hot-reload it; optionally pass a Zellij session"
+depends = ["install"]
+run = "./scripts/reload-plugin installed"
+
+[tasks.status]
+description = "Republish a known agent state after reload"
+run = "./scripts/publish-agent-status"
+
+[tasks.docs]
+description = "Regenerate the repository OpenWiki"
+run = "openwiki code --update --print"

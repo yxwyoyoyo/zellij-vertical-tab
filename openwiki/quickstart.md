@@ -17,14 +17,15 @@ The [architecture guide](architecture.md) explains the flattened row model, pane
 ### Requirements
 
 - Zellij **0.44.3** and matching `zellij-tile = 0.44.3`.
-- Rust with the `wasm32-wasip1` target; this machine exposes Rust through `mise`, so maintainer commands use `mise exec -- cargo ...` (`AGENTS.md`).
+- [`mise`](development.md#bootstrap-and-task-entrypoints), which pins Rust **1.97.1** and Node **26.5.0** and installs the `wasm32-wasip1` target plus repository CLIs (`mise.toml`, `DEVELOPMENT.md`).
 - A Nerd Font for the four Codex status glyphs.
 
 ```sh
-rustup target add wasm32-wasip1                 # once
-mise exec -- cargo test                         # host Rust tests
-mise exec -- cargo build --target wasm32-wasip1 # debug WASM
-zellij -l zellij.kdl                            # run from the repository root
+mise trust
+mise install
+mise run setup # once: WASM target, OpenSpec, and OpenWiki
+mise run test  # Rust host tests + Python bridge tests
+mise run dev   # build debug WASM and launch zellij.kdl
 ```
 
 The development layout loads `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm` into a fixed **32-column** pane. On first use, approve `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, and `MessageAndLaunchOtherPlugins`; the last two support Codex messages and synchronization among the sidebar instance created in each tab.
@@ -61,8 +62,10 @@ See [architecture constraints](architecture.md#runtime-and-layout-constraints) f
 | `openspec/changes/archive/` | Archived proposals, designs, deltas, and completion evidence | Understanding why status, badges, ellipsis, or pane hierarchy changed |
 | `zellij.kdl` | Development template with 32-column sidebar, content pane, and status bar | Changing layout or launching locally |
 | `Cargo.toml` | Binary target, ABI-sensitive dependency pin, and size-focused release profile | Changing packaging or dependencies |
+| `mise.toml` | Pinned tools and reproducible setup, test, build, check, reload, release, install, deploy, status, and docs tasks | Running or changing maintainer automation |
+| `scripts/` | Safe session-aware plugin reload and explicit known-state status republication | Changing runtime helpers or reload recovery |
 | `README.md` | User installation, Codex setup, and behavior | Updating public instructions |
-| `AGENTS.md` | mise commands, PTY runbook, and crash-derived constraints | Preparing or validating a change |
+| `AGENTS.md` and `DEVELOPMENT.md` | Canonical commands, feature/release workflow, PTY runbook, and crash-derived constraints | Preparing or validating a change |
 | `.github/workflows/openwiki-update.yml` | Scheduled/manual documentation update PR | Maintaining wiki automation |
 
 ## Repository progression

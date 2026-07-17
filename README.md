@@ -31,16 +31,17 @@ A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertical
 ## Build
 
 ```sh
-rustup target add wasm32-wasip1        # once
-cargo build --release --target wasm32-wasip1
+mise trust
+mise install
+mise run setup                         # once
+mise run release
 # -> target/wasm32-wasip1/release/zellij_vertical_tab.wasm
 ```
 
 ## Try it
 
 ```sh
-cargo build --target wasm32-wasip1     # debug build
-zellij -l zellij.kdl                   # from this directory
+mise run dev
 ```
 
 On first load zellij asks for the plugin's permissions (`ReadApplicationState` to see tabs, `ChangeApplicationState` to switch them, `ReadCliPipes` to receive agent status, and `MessageAndLaunchOtherPlugins` to synchronize the sidebar instances created for separate tabs). Approve with `y` — the choice is cached afterwards.
@@ -124,9 +125,13 @@ Closing a pane or exiting Codex clears its status, and starting a new Codex sess
 ## Development
 
 ```sh
-cargo test                             # unit tests (host target)
-zellij action start-or-reload-plugin file:target/wasm32-wasip1/debug/zellij_vertical_tab.wasm
+mise run test    # fast Rust + bridge tests
+mise run reload  # rebuild and hot-reload inside Zellij
+mise run check   # complete pre-PR gate
 ```
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the feature, OpenSpec, live
+verification, status restoration, documentation, and release workflows.
 
 ## How it works
 

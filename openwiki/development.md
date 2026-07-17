@@ -12,45 +12,46 @@ This runbook applies the invariants in the [plugin architecture](architecture.md
 
 ## Mise-managed workflows
 
-The maintainer machine has no system Cargo; Rust commands are run through `mise exec --` (`AGENTS.md`). The repository does not define checked-in mise task aliases, so use the explicit commands below. Add `wasm32-wasip1` once with `rustup target add wasm32-wasip1`.
+`AGENTS.md` and `DEVELOPMENT.md` are the canonical maintainer workflow. The checked-in `mise.toml` pins Rust 1.97.1 and Node 26.5.0 and exposes task aliases so tests, builds, runtime helpers, releases, specifications, and documentation use consistent entrypoints.
 
-### Build and test
+### Bootstrap and task entrypoints
 
 ```sh
-mise exec -- cargo test
-python3 -m unittest discover -s hooks/codex -p 'test_*.py'
-mise exec -- cargo build --target wasm32-wasip1
+mise trust
+mise install
+mise run setup
+```
+
+`setup` adds `wasm32-wasip1` and installs the pinned OpenSpec 1.6.0 and OpenWiki 0.2.0 CLIs. The normal loop is:
+
+```sh
+mise run test  # cargo test + Python Codex bridge tests
+mise run build # debug WASM
+mise run dev   # build, then launch zellij.kdl
+mise run check # complete pre-PR gate
 ```
 
 The host Rust tests exercise pure status, pane hierarchy, row target, viewport, cell-width, inset, and styling helpers. The Python tests exercise lifecycle mapping, process-exit cleanup, completion notification parsing, and notifier forwarding. The debug artifact is `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm`.
 
-### Release build and install
+### Development launch, reload, and status restoration
+
+`mise run dev` must start from the repository root because `zellij.kdl` loads the relative debug artifact. After an edit, `mise run reload` first rebuilds and then delegates to `scripts/reload-plugin debug`:
 
 ```sh
-mise exec -- cargo build --release --target wasm32-wasip1
-mkdir -p ~/.config/zellij/plugins
-install -m 644 target/wasm32-wasip1/release/zellij_vertical_tab.wasm \
-  ~/.config/zellij/plugins/zellij_vertical_tab.wasm
+mise run reload                       # current Zellij session
+mise run reload -- Hub                # named session from another terminal
+ZELLIJ_DEV_SESSION=Hub mise run reload
 ```
 
-The release profile enables LTO, size optimization, one codegen unit, and stripping (`Cargo.toml`). Configure `~/.config/zellij/layouts/default.kdl` from the README example: use `size=32`, keep `children` nested in its own pane, and point the plugin location at the installed WASM.
+The helper resolves the artifact to an absolute path, verifies it exists, and calls `start-or-reload-plugin`. It targets the explicit argument, then `ZELLIJ_DEV_SESSION`, then the current `ZELLIJ_SESSION_NAME`; outside Zellij it fails rather than guessing a session. `mise run deploy -- Hub` applies the same targeting rules to the installed release artifact after the release gate and installation.
 
-### Development launch and hot reload
+Reloading replaces the plugin instance and therefore clears its in-memory, pane-keyed agent records. The plugin deliberately has no durable store and cannot safely infer every live Codex state. If the current pane, Codex session ID, and state are known, republish that exact state through the normal `vertical-tab-agent-status` protocol:
 
 ```sh
-mise exec -- cargo build --target wasm32-wasip1
-zellij -l zellij.kdl
+mise run status -- terminal_0 <codex-session-id> done Hub
 ```
 
-Run the layout from the repository root because it loads a relative debug artifact. For a running development session, rebuild and then reload:
-
-```sh
-mise exec -- cargo build --target wasm32-wasip1
-zellij action start-or-reload-plugin \
-  file:target/wasm32-wasip1/debug/zellij_vertical_tab.wasm
-```
-
-A stale WASM can make source-level debugging misleading (`tasks/lessons.md`). Hot reload is suitable for rendering and state iteration; startup-template and permission behavior still needs a fresh session.
+`scripts/publish-agent-status` accepts only `terminal_<number>` pane IDs and `idle`, `working`, `waiting`, `done`, or `clear`; it emits a version-1 payload with a fresh timestamp and uses the same explicit/environment/current-session targeting order. Starting another prompt also republishes state through the normal Codex hooks. A stale WASM can make source-level debugging misleading (`tasks/lessons.md`), and startup-template or permission behavior still requires a fresh session rather than reload.
 
 ## Codex bridge installation
 
@@ -75,7 +76,7 @@ To preserve an existing notifier, place its command and fixed arguments between 
 
 ### Rust host tests
 
-Run `mise exec -- cargo test`. Tests are colocated in `src/main.rs` and currently cover:
+Run `mise run test`; its Rust tests are colocated in `src/main.rs` and currently cover:
 
 - viewport bounds and active-tab following over flattened hierarchy rows;
 - terminal-pane filtering and deterministic tiled/floating/suppressed ordering;
@@ -89,11 +90,11 @@ Keep runtime host calls out of these tests unless a proper mock layer is introdu
 
 ### Python bridge tests
 
-Run `python3 -m unittest discover -s hooks/codex -p 'test_*.py'`. Add cases whenever lifecycle mapping, notification payload fields, forwarding syntax, or process cleanup changes.
+`mise run test` also runs `python3 -m unittest discover -s hooks/codex -p 'test_*.py'`. Add cases whenever lifecycle mapping, notification payload fields, forwarding syntax, or process cleanup changes.
 
 ### WASM and specification checks
 
-Always pair host tests with a WASM build because host success does not prove the runtime target or `_start` module shape. For release work, build `--release` as well. The archived pane-aware completion record (`openspec/changes/archive/2026-07-17-nest-panes-under-tabs/tasks.md`) also records formatting, Clippy, strict OpenSpec validation, release installation, and live/headless verification. Repeat those categories when changing implementation or specs; exact formatter/Clippy/OpenSpec command lines are not checked into the repository, so do not assume undocumented aliases.
+Always pair host tests with a WASM build because host success does not prove the runtime target or `_start` module shape. `mise run check` is the complete pre-PR gate: formatting, Rust and Python tests, Clippy with warnings denied, debug WASM, strict validation of all OpenSpec artifacts, and `git diff --check`. `mise run release` depends on that gate before building release WASM. The archived pane-aware completion record (`openspec/changes/archive/2026-07-17-nest-panes-under-tabs/tasks.md`) provides additional live/headless verification evidence.
 
 The current behavior contract is `openspec/specs/`. Completed proposals and rationale are under `openspec/changes/archive/`; there is no active change directory at the current merged `main` head.
 
@@ -151,7 +152,7 @@ Confirm the explicit binary target and `register_plugin!(State)` remain. A react
 ## Release and maintenance notes
 
 - Treat a Zellij upgrade as an ABI migration: update the binary, `zellij-tile`, lockfile, and runtime test environment together.
-- Release remains a local mise build plus install/copy; no checked-in product CI publishes WASM.
-- Keep baseline OpenSpec files synchronized with implemented behavior, then archive completed changes with their proposal/design/task evidence.
-- `.github/workflows/openwiki-update.yml` updates documentation daily or on demand; it does not build, test, install, or release the plugin.
-- The current merged branch is `main` at `0186450`, with a clean working tree before this documentation update. Recent history, unlike the initial wiki run, is available and records the status, badge, ellipsis, and pane-aware progression.
+- `mise run release` gates and builds release WASM; `mise run install` copies it to `${ZELLIJ_PLUGIN_DIR:-$HOME/.config/zellij/plugins}`, and `mise run deploy -- <session>` installs then reloads it. Startup-sensitive changes still need a new session.
+- No checked-in product CI publishes WASM; release and installation remain maintainer-run tasks.
+- Keep baseline OpenSpec files synchronized with implemented behavior, then archive completed changes with their proposal/design/task evidence. `mise run spec` performs strict validation.
+- Run `mise run docs` only after code and specifications stabilize; it invokes an OpenWiki code-mode update. `.github/workflows/openwiki-update.yml` also updates documentation daily or on demand, but does not build, test, install, or release the plugin.

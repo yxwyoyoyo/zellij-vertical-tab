@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: publish-agent-status <terminal-pane-id> <codex-session-id> <state> [zellij-session]
+
+States: idle, working, waiting, done, clear
+
+Use this after a plugin hot reload when you know the current Codex state. The
+plugin intentionally has no durable state store, so this command does not try
+to infer or restore state automatically.
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+    usage >&2
+    exit 2
+fi
+
+pane_id="$1"
+codex_session_id="$2"
+state="$3"
+zellij_session="${4:-${ZELLIJ_DEV_SESSION:-}}"
+
+if [[ ! "$pane_id" =~ ^terminal_[0-9]+$ ]]; then
+    printf 'Invalid terminal pane ID: %s\n' "$pane_id" >&2
+    exit 2
+fi
+
+case "$state" in
+    idle|working|waiting|done|clear) ;;
+    *)
+        printf 'Invalid state: %s\n' "$state" >&2
+        exit 2
+        ;;
+esac
+
+payload="$({
+    PANE_ID="$pane_id" \
+    CODEX_SESSION_ID="$codex_session_id" \
+    AGENT_STATE="$state" \
+    python3 - <<'PY'
+import json
+import os
+import time
+
+print(json.dumps({
+    "version": 1,
+    "pane_id": os.environ["PANE_ID"],
+    "session_id": os.environ["CODEX_SESSION_ID"],
+    "state": os.environ["AGENT_STATE"],
+    "updated_at_ms": time.time_ns() // 1_000_000,
+}, separators=(",", ":")))
+PY
+})"
+
+if [[ -n "$zellij_session" ]]; then
+    zellij --session "$zellij_session" pipe --name vertical-tab-agent-status -- "$payload"
+elif [[ -n "${ZELLIJ_SESSION_NAME:-}" ]]; then
+    zellij pipe --name vertical-tab-agent-status -- "$payload"
+else
+    printf 'Not inside Zellij; pass a session name or set ZELLIJ_DEV_SESSION.\n' >&2
+    exit 2
+fi
+
+printf 'Published %s for %s in %s\n' "$state" "$pane_id" \
+    "${zellij_session:-$ZELLIJ_SESSION_NAME}"
