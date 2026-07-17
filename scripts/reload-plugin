@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: reload-plugin [debug|installed] [zellij-session]
+
+Hot-reload the debug build or installed release plugin. When no session is
+given, the command uses the current Zellij session. Outside Zellij, pass the
+session name or set ZELLIJ_DEV_SESSION.
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+mode="${1:-debug}"
+session="${2:-${ZELLIJ_DEV_SESSION:-}}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+case "$mode" in
+    debug)
+        plugin_path="$repo_root/target/wasm32-wasip1/debug/zellij_vertical_tab.wasm"
+        ;;
+    installed)
+        plugin_dir="${ZELLIJ_PLUGIN_DIR:-$HOME/.config/zellij/plugins}"
+        plugin_path="$plugin_dir/zellij_vertical_tab.wasm"
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
+
+if [[ ! -f "$plugin_path" ]]; then
+    printf 'Plugin artifact not found: %s\n' "$plugin_path" >&2
+    exit 1
+fi
+
+if [[ -n "$session" ]]; then
+    zellij --session "$session" action start-or-reload-plugin "file:$plugin_path"
+elif [[ -n "${ZELLIJ_SESSION_NAME:-}" ]]; then
+    zellij action start-or-reload-plugin "file:$plugin_path"
+else
+    printf 'Not inside Zellij; pass a session name or set ZELLIJ_DEV_SESSION.\n' >&2
+    exit 2
+fi
+
+printf 'Reloaded %s plugin: %s\n' "$mode" "$plugin_path"

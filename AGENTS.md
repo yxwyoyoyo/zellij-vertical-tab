@@ -4,14 +4,18 @@ Zellij plugin (Rust → wasm32-wasip1) rendering tabs vertically in a 32-col sid
 
 ## Commands
 
-This machine has no system cargo; Rust is managed by mise — prefix cargo with `mise exec --`:
+This machine has no system cargo; use the checked-in mise workflow:
 
 ```sh
-mise exec -- cargo test                                   # unit tests (host target)
-mise exec -- cargo build --target wasm32-wasip1           # debug wasm
-mise exec -- cargo build --release --target wasm32-wasip1 # release wasm
-zellij -l zellij.kdl                                      # run the dev layout (from repo root)
+mise run test    # Rust unit tests + Python bridge tests
+mise run build   # debug wasm
+mise run check   # complete pre-PR gate
+mise run dev     # build and run the dev layout
+mise run release # checked release wasm
 ```
+
+See `DEVELOPMENT.md` for hot reload, explicit status restoration, OpenSpec,
+documentation, install, and release workflows.
 
 Headless end-to-end test (macOS `script` gives a pty; session must not think it's nested):
 
@@ -39,6 +43,8 @@ Keystrokes can be injected into the pipe (e.g. `printf 'y'` for the permission p
 ## Structure
 
 - `src/main.rs` — the whole plugin (state, update, render, pure helpers + unit tests)
+- `mise.toml` and `scripts/` — reproducible local tasks and safe runtime helpers
+- `DEVELOPMENT.md` — daily, feature, verification, release, and documentation workflow
 - `hooks/codex/` — source, user-level configuration template, and tests for the Codex lifecycle-to-Zellij status bridge
 - `openspec/` — baseline specifications and active change artifacts
 - `zellij.kdl` — dev layout (left sidebar + status-bar, no horizontal tab-bar)
