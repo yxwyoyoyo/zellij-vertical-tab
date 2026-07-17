@@ -1,33 +1,4 @@
-# Vertical Tab Sidebar Specification
-
-## Purpose
-
-Define the user-visible behavior, interaction model, layout integration, and runtime safety constraints of the Zellij vertical tab sidebar.
-
-## Requirements
-
-### Requirement: Ordered vertical tab list
-The plugin SHALL render session tabs as a vertical list in Zellij tab-position order, with at most one tab per sidebar row.
-
-#### Scenario: Tabs are available
-- **WHEN** Zellij supplies a tab-state update
-- **THEN** each visible row shows the tab's one-based position followed by its name
-- **AND** the row order matches the order supplied by Zellij
-
-#### Scenario: No tabs or no drawable area
-- **WHEN** the tab list is empty or the sidebar has zero rows or columns
-- **THEN** the plugin renders no tab rows
-
-### Requirement: Active tab presentation
-The plugin SHALL visually distinguish the active tab using Zellij's selected text styling and SHALL keep the active tab inside the visible sidebar window.
-
-#### Scenario: Active tab changes outside the sidebar
-- **WHEN** a keyboard command or another Zellij action activates a tab outside the current visible window
-- **THEN** the plugin moves the window by the minimum amount needed to reveal that tab
-
-#### Scenario: Active tab is already visible
-- **WHEN** the active tab changes but remains inside the current visible window
-- **THEN** the plugin preserves the current scroll position
+## ADDED Requirements
 
 ### Requirement: Adaptive pane hierarchy
 The plugin SHALL represent every tab with a parent row and SHALL add permanently visible indented terminal-pane child rows only when that tab contains more than one terminal pane. The plugin SHALL NOT render an expand/collapse icon or maintain show/hide state.
@@ -66,6 +37,8 @@ The plugin SHALL visually distinguish a focused terminal-pane child row using Ze
 #### Scenario: Child pane is not focused
 - **WHEN** a pane child row does not represent the focused terminal pane of the active tab
 - **THEN** the plugin does not apply focused-pane selected styling to that child row
+
+## MODIFIED Requirements
 
 ### Requirement: Width-fitted rows
 Every rendered tab or pane row SHALL fit the sidebar's current content width and SHALL fill that width so selected styling spans the complete row. Every row SHALL reserve one trailing padding cell when the available width can still preserve its required prefix or status badge. A row with agent status SHALL reserve a right-aligned suffix for its glyph without displaying an agent-name prefix. When a tab name or pane title exceeds its remaining cell budget, the row SHALL end the visible name portion with a single-cell ellipsis.
@@ -137,33 +110,3 @@ The plugin SHALL activate the target represented by a valid left-clicked sidebar
 #### Scenario: User clicks outside the rendered rows
 - **WHEN** the user left-clicks a row that does not map to a flattened hierarchy row
 - **THEN** the plugin performs no tab-switching or pane-focusing action
-
-### Requirement: Session-wide layout integration
-The development layout SHALL place the sidebar in every tab, replace the built-in horizontal tab bar, and retain the built-in status bar.
-
-#### Scenario: Session starts from the development layout
-- **WHEN** Zellij loads `zellij.kdl`
-- **THEN** every tab receives a borderless 32-column vertical sidebar
-- **AND** normal tab children occupy the sibling pane
-- **AND** the built-in status bar occupies the bottom row
-
-### Requirement: Startup-safe unselectable sidebar
-The sidebar SHALL become unselectable only after the plugin receives its first event, while remaining able to receive mouse events.
-
-#### Scenario: Plugin is loaded in the default tab template
-- **WHEN** Zellij invokes the plugin's load lifecycle method
-- **THEN** the plugin does not call `set_selectable(false)` during that method
-- **AND** it calls `set_selectable(false)` once when processing its first event
-
-#### Scenario: Layout wraps normal children
-- **WHEN** the sidebar is an unselectable sibling in `default_tab_template`
-- **THEN** the layout wraps `children` inside a separate `pane` block
-
-### Requirement: Zellij plugin compatibility
-The built plugin SHALL use the Zellij plugin ABI expected by the installed Zellij binary and SHALL expose the command-module entrypoint required by Zellij.
-
-#### Scenario: Plugin is built for Zellij
-- **WHEN** the release artifact is produced
-- **THEN** it targets `wasm32-wasip1`
-- **AND** it is built as a binary crate that exports `_start`
-- **AND** its `zellij-tile` version matches the Zellij binary version

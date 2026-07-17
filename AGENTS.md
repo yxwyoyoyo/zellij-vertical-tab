@@ -1,6 +1,6 @@
 # AGENTS
 
-Zellij plugin (Rust → wasm32-wasip1) rendering tabs vertically in a 24-col side pane.
+Zellij plugin (Rust → wasm32-wasip1) rendering tabs vertically in a 32-col side pane.
 
 ## Commands
 
