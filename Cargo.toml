@@ -15,6 +15,9 @@ path = "src/main.rs"
 [dependencies]
 # Must match the installed zellij version (protobuf event schema).
 zellij-tile = "0.44.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-width = "0.2"
 
 [profile.release]
 lto = true

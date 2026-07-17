@@ -1,0 +1,66 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ]
+  }
+}
