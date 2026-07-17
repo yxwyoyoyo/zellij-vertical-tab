@@ -1,0 +1,24 @@
+// Dev layout: `zellij -l zellij.kdl` from the repo root.
+//
+// The vertical tab bar lives in the default_tab_template so that *every* new
+// tab gets the side pane (overriding the template also removes the built-in
+// horizontal tab-bar for this session).
+//
+// IMPORTANT: `children` must be wrapped in its own `pane { ... }`. With
+// `children` as a direct sibling of the plugin pane, calling
+// set_selectable(false) crashes the session on zellij 0.44.
+layout {
+    default_tab_template {
+        pane split_direction="vertical" {
+            pane size=24 borderless=true {
+                plugin location="file:target/wasm32-wasip1/debug/zellij_vertical_tab.wasm"
+            }
+            pane {
+                children
+            }
+        }
+        pane size=1 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+}

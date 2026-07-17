@@ -1,0 +1,23 @@
+[package]
+name = "zellij-vertical-tab"
+version = "0.1.0"
+edition = "2021"
+description = "A Zellij plugin that renders tabs vertically in a fixed-width side pane"
+license = "MIT"
+
+# Plugins are bin crates: zellij requires the wasm module to export `_start`,
+# which only command (not reactor/cdylib) modules provide. `register_plugin!`
+# generates the `fn main()` entry point.
+[[bin]]
+name = "zellij_vertical_tab"
+path = "src/main.rs"
+
+[dependencies]
+# Must match the installed zellij version (protobuf event schema).
+zellij-tile = "0.44.3"
+
+[profile.release]
+lto = true
+opt-level = "z"
+codegen-units = 1
+strip = true
