@@ -530,16 +530,16 @@ fn format_row(
     badge: Option<&str>,
     width: usize,
 ) -> String {
-    let body = format!("{}{:>iw$} {}", lead, index, name, iw = index_width);
+    let prefix = format!("{}{:>iw$} ", lead, index, iw = index_width);
     let Some(badge) = badge.filter(|badge| !badge.is_empty()) else {
-        return fit_to_width(&body, width);
+        return fit_tab_body(&prefix, name, width);
     };
     let badge_width = display_width(badge);
     if badge_width >= width {
         return fit_to_width(badge, width);
     }
     let body_width = width - badge_width - 1;
-    format!("{} {}", fit_to_width(&body, body_width), badge)
+    format!("{} {}", fit_tab_body(&prefix, name, body_width), badge)
 }
 
 fn display_width(value: &str) -> usize {
@@ -559,12 +559,28 @@ fn color_agent_badge(text: Text, state: AgentState, badge_chars: usize) -> Text 
     }
 }
 
-/// Truncate to `width` terminal cells and pad with spaces so row-wide styles
-/// (e.g. selected) span the whole row while preserving right-hand suffixes.
-fn fit_to_width(s: &str, width: usize) -> String {
+fn fit_tab_body(prefix: &str, name: &str, width: usize) -> String {
+    let prefix_width = display_width(prefix);
+    if prefix_width >= width {
+        return fit_to_width(prefix, width);
+    }
+
+    let name_width = width - prefix_width;
+    if display_width(name) <= name_width {
+        return format!("{}{}", prefix, fit_to_width(name, name_width));
+    }
+    if name_width == 0 {
+        return fit_to_width(prefix, width);
+    }
+
+    let visible_name = truncate_to_width(name, name_width - 1);
+    fit_to_width(&format!("{prefix}{visible_name}…"), width)
+}
+
+fn truncate_to_width(value: &str, width: usize) -> String {
     let mut out = String::new();
     let mut used = 0;
-    for character in s.chars() {
+    for character in value.chars() {
         let character_width = character.width().unwrap_or(0);
         if used + character_width > width {
             break;
@@ -572,6 +588,14 @@ fn fit_to_width(s: &str, width: usize) -> String {
         out.push(character);
         used += character_width;
     }
+    out
+}
+
+/// Truncate to `width` terminal cells and pad with spaces so row-wide styles
+/// (e.g. selected) span the whole row while preserving right-hand suffixes.
+fn fit_to_width(s: &str, width: usize) -> String {
+    let mut out = truncate_to_width(s, width);
+    let used = display_width(&out);
     if used < width {
         out.push_str(&" ".repeat(width - used));
     }
@@ -643,6 +667,28 @@ mod tests {
     fn row_format_aligns_double_digit_indices() {
         assert_eq!(format_row(ARROW_DOWN, 10, 2, "x", None, 8), "▼10 x   ");
         assert_eq!(format_row(ARROW_UP, 9, 2, "x", None, 8), "▲ 9 x   ");
+    }
+
+    #[test]
+    fn row_format_ellipsizes_long_ascii_name() {
+        assert_eq!(
+            format_row(' ', 1, 1, "very-long-name", None, 10),
+            " 1 very-l…"
+        );
+    }
+
+    #[test]
+    fn row_format_ellipsizes_wide_name_by_terminal_cells() {
+        let row = format_row(' ', 1, 1, "界界界界", None, 9);
+        assert_eq!(row, " 1 界界… ");
+        assert_eq!(display_width(&row), 9);
+    }
+
+    #[test]
+    fn row_format_omits_name_when_prefix_fills_width() {
+        assert_eq!(format_row(' ', 1, 1, "overflow", None, 3), " 1 ");
+        assert_eq!(format_row(' ', 1, 1, "overflow", None, 2), " 1");
+        assert_eq!(format_row(' ', 1, 1, "overflow", Some(""), 5), " 1  ");
     }
 
     #[test]
@@ -932,14 +978,14 @@ mod tests {
         assert_eq!(format_row(' ', 1, 1, "work", Some(""), 10), " 1 work  ");
         assert_eq!(
             format_row(' ', 1, 1, "very-long-name", Some("2"), 10),
-            " 1 very 2"
+            " 1 ver… 2"
         );
         assert_eq!(format_row(' ', 1, 1, "x", Some("2"), 2), "2");
         assert_eq!(
             format_row(' ', 1, 1, "界界界界", Some(""), 10),
-            " 1 界界  "
+            " 1 界界… "
         );
-        assert_eq!(display_width(" 1 界界  "), 10);
+        assert_eq!(display_width(" 1 界界… "), 10);
     }
 
     #[test]
