@@ -100,23 +100,25 @@ The plugin SHALL associate terminal pane statuses with their owning tabs from Ze
 - **THEN** the plugin removes that pane's status record
 
 ### Requirement: Multi-pane tab aggregation
-The plugin SHALL render one prefix-free aggregate badge for all tracked Codex panes belonging to a tab.
+The plugin SHALL place a prefix-free agent status badge on the row that most precisely represents its owning terminal pane while keeping tabs with at most one terminal pane compact.
 
-#### Scenario: One Codex pane is tracked
-- **WHEN** a tab contains exactly one tracked pane with a renderable state
-- **THEN** its badge contains only that pane's state glyph
+#### Scenario: Tab has one terminal pane with status
+- **WHEN** a tab contains exactly one terminal pane and that pane has a renderable state
+- **THEN** the tab row displays that pane's state glyph without a pane count
+- **AND** no pane child row is rendered
 
-#### Scenario: Multiple Codex panes are tracked
-- **WHEN** a tab contains more than one tracked pane with renderable states
-- **THEN** its badge contains the dominant state glyph followed by the total tracked pane count
+#### Scenario: Tab has multiple terminal panes with statuses
+- **WHEN** a tab contains more than one terminal pane
+- **THEN** each pane child row displays only that pane's renderable state glyph when one exists
+- **AND** the parent tab row displays no aggregate badge or pane count
 
-#### Scenario: Tracked panes have different states
-- **WHEN** a tab contains multiple states
-- **THEN** the dominant state is selected using `waiting`, then `working`, then `done`, then `idle` precedence
+#### Scenario: Only some panes have status
+- **WHEN** a multi-pane tab contains terminal panes without tracked agent state
+- **THEN** those pane rows render without a badge while tracked pane rows retain their own badges
 
 #### Scenario: Tab has no tracked Codex pane
 - **WHEN** no tracked terminal pane with a renderable state belongs to a tab
-- **THEN** the tab row has no agent status badge
+- **THEN** the tab and pane rows have no agent status badge
 
 ### Requirement: Sidebar instance synchronization
 The plugin SHALL synchronize agent status across all vertical-sidebar plugin instances in the Zellij session so every tab displays the same session-wide status view.
@@ -130,34 +132,30 @@ The plugin SHALL synchronize agent status across all vertical-sidebar plugin ins
 - **THEN** it requests and merges a timestamp-validated snapshot of the peer's current agent records
 
 ### Requirement: Aligned theme-colored status badges
-The plugin SHALL render each agent state with a single-cell icon provided by Nerd Font Mono and SHALL apply a distinct Zellij theme style to the complete aggregate badge without changing the selected row's background styling.
+The plugin SHALL render each agent state with a single-cell icon provided by Nerd Font Mono and SHALL apply a distinct Zellij theme style to the complete badge without changing selected row background styling.
 
 #### Scenario: Idle status is rendered
-- **WHEN** a tab's dominant agent state is `idle`
+- **WHEN** a tab or pane row represents an `idle` agent state
 - **THEN** its badge uses the native Nerd Font circle-outline icon ``
 - **AND** the complete badge uses Zellij's dim text style
 
 #### Scenario: Working status is rendered
-- **WHEN** a tab's dominant agent state is `working`
+- **WHEN** a tab or pane row represents a `working` agent state
 - **THEN** its badge uses the native Nerd Font filled-circle icon ``
 - **AND** the complete badge uses Zellij text emphasis level 1
 
 #### Scenario: Waiting status is rendered
-- **WHEN** a tab's dominant agent state is `waiting`
+- **WHEN** a tab or pane row represents a `waiting` agent state
 - **THEN** its badge uses the native Nerd Font clock icon ``
 - **AND** the complete badge uses Zellij text emphasis level 0
 
 #### Scenario: Done status is rendered
-- **WHEN** a tab's dominant agent state is `done`
+- **WHEN** a tab or pane row represents a `done` agent state
 - **THEN** its badge uses the native Nerd Font check-circle icon ``
 - **AND** the complete badge uses Zellij's semantic success style
 
-#### Scenario: Multiple panes share a badge
-- **WHEN** a badge includes a pane count after its dominant-state icon
-- **THEN** the icon and count receive the same state-specific text style
-
-#### Scenario: Active tab has a colored badge
-- **WHEN** a colored badge belongs to the active tab row
+#### Scenario: Selected row has a colored badge
+- **WHEN** a colored badge belongs to an active tab row or focused pane child row
 - **THEN** the badge retains its state-specific foreground style
 - **AND** selected styling continues across the complete row background
 

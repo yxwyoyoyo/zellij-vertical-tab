@@ -1,24 +1,26 @@
 # zellij-vertical-tab
 
-A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertically** — one row per tab — in a fixed-width side pane, replacing the horizontal tab-bar.
+A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertically** in a fixed-width side pane, replacing the horizontal tab-bar. Multi-pane tabs include indented pane rows so agent state remains attached to the pane that owns it.
 
 ```
- 1 Tab #1            ┐
- 2 editor           │  24-column side pane
- 3 tests           2│  (active row highlighted
-▲12 very-long-tab-nam…  ┘   with your theme)
+ 1 editor           ┐
+ 2 services          │  one-pane tabs stay compact
+    api             │  multi-pane tabs show children
+    database        │  with per-pane agent status
+▲3 very-long-tab-name…┘
 ```
 
 ## Features
 
-- One row per tab, prefixed with its index (matches `GoToTab` numbers)
-- Long tab names end with a cell-aware `…` ellipsis instead of being cut off silently
+- One compact row for tabs with zero or one terminal pane, prefixed with its index (matches `GoToTab` numbers)
+- Indented, always-visible terminal-pane rows under tabs containing multiple panes; no expand/collapse control
+- Rows keep a one-cell right edge inset; long tab and pane names end with a cell-aware `…` ellipsis instead of being cut off silently
 - Active tab highlighted using your zellij theme
-- Left-click a row to switch to that tab
-- Scroll wheel moves the list when tabs overflow the pane height; `▲`/`▼` markers indicate hidden rows
+- Left-click a tab row to switch tabs or a pane row to focus that exact pane
+- Scroll wheel moves the flattened tab-and-pane list when it overflows the pane height; `▲`/`▼` markers indicate hidden rows
 - The active tab is always kept in view (follows keyboard tab switching)
-- Codex lifecycle status shown as a right-aligned, vertically aligned, theme-colored Nerd Font badge: dim `` idle, cyan `` working, orange `` waiting for permission, or green `` answer ready
-- Multiple Codex panes in one tab are aggregated without an agent-name prefix (for example, `2`)
+- Codex lifecycle status shown as a right-aligned badge, vertically aligned and theme-colored: dim `` idle, cyan `` working, orange `` waiting for permission, or green `` answer ready
+- Multiple panes in one tab show their Codex state independently on each pane row without an agent-name prefix
 
 ## Requirements
 
@@ -70,7 +72,7 @@ Codex runs the lifecycle bridge at session, prompt, pre-tool, permission, and st
 
 1. Start Codex from this repository inside a Zellij terminal pane.
 2. Open `/hooks` in Codex and trust the user hook when prompted.
-3. Submit a prompt. The owning tab will move through these states:
+3. Submit a prompt. A one-pane tab, or the owning pane row in a multi-pane tab, will move through these states:
 
    | Badge | State |
    | --- | --- |
@@ -79,9 +81,9 @@ Codex runs the lifecycle bridge at session, prompt, pre-tool, permission, and st
    | `` | Codex is waiting for permission |
    | `` | Codex has delivered an answer |
 
-Status is tracked per terminal pane. If a tab contains multiple Codex panes, the badge appends the total pane count and uses `waiting`, then `working`, then `done`, then `idle` precedence. For example, one waiting pane and two working panes render as `3`.
+Status is tracked per terminal pane. A tab with one terminal pane keeps the badge on its compact tab row. A tab with multiple terminal panes shows all pane titles beneath the tab and puts each badge on its owning pane row; the parent tab has no duplicate aggregate badge. Tiled panes are ordered by screen position, followed by floating and suppressed panes.
 
-Badge colors come from the active Zellij theme: idle is dimmed, working uses cyan emphasis, waiting uses orange emphasis, and done uses the success color. Selected tabs retain their full-row selected styling.
+Badge colors come from the active Zellij theme: idle is dimmed, working uses cyan emphasis, waiting uses orange emphasis, and done uses the success color. Selected tabs and the focused pane child retain full-row selected styling.
 
 Closing a pane or exiting Codex clears its status, and starting a new Codex session in a reused pane replaces the old session. Codex initializes lifecycle hooks lazily, so a newly opened TUI may not show `` until its first prompt is submitted. Exit cleanup is best-effort if the bridge cannot identify the Codex ancestor process; closing the pane still clears the record.
 
@@ -100,7 +102,7 @@ Closing a pane or exiting Codex clears its status, and starting a new Codex sess
    layout {
        default_tab_template {
            pane split_direction="vertical" {
-               pane size=24 borderless=true {
+               pane size=32 borderless=true {
                    plugin location="file:~/.config/zellij/plugins/zellij_vertical_tab.wasm"
                }
                pane {
@@ -129,9 +131,10 @@ zellij action start-or-reload-plugin file:target/wasm32-wasip1/debug/zellij_vert
 ## How it works
 
 - The plugin is a **bin crate**: zellij requires the wasm module to export `_start` (command-style module), which only bin targets provide. `register_plugin!` generates `main()`.
-- `set_selectable(false)` makes the pane unfocusable (same pattern as the built-in tab-bar) and is what makes a fixed `size=24` pane stable. On zellij 0.44 it must not be called during initial startup when the pane lives in a `default_tab_template`, so the plugin defers it to the first event. Unselectable panes still receive mouse events.
-- Rendering uses `Text`/`print_text_with_coordinates` (`ztext` APC sequences) so colors always follow the user's theme; the active row is `.selected()` and padded to full width.
-- `PaneUpdate` associates terminal panes with tabs, while the `vertical-tab-agent-status` Zellij pipe carries versioned lifecycle messages from the user-level Codex hook. The plugin keeps only the newest session record per terminal pane and aggregates records at render time.
+- `set_selectable(false)` makes the pane unfocusable (same pattern as the built-in tab-bar) and is what makes a fixed `size=32` pane stable. On zellij 0.44 it must not be called during initial startup when the pane lives in a `default_tab_template`, so the plugin defers it to the first event. Unselectable panes still receive mouse events.
+- Rendering uses `Text`/`print_text_with_coordinates` (`ztext` APC sequences) so colors always follow the user's theme; active tab and focused pane rows are `.selected()` and padded to full width.
+- `PaneUpdate` associates terminal panes with tabs and supplies pane titles, focus, layers, and geometry. The plugin flattens tabs and multi-pane children into the same row model used by rendering, scrolling, and mouse input.
+- The `vertical-tab-agent-status` Zellij pipe carries versioned lifecycle messages from the user-level Codex hook. The plugin keeps only the newest session record per terminal pane and places it on the compact tab row or exact pane child as appropriate.
 
 ## License
 
