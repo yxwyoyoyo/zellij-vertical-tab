@@ -6,12 +6,13 @@ A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertical
  1 Tab #1            ┐
  2 editor           │  24-column side pane
  3 tests           2│  (active row highlighted
-▲12 long-tab-name   ┘   with your theme)
+▲12 very-long-tab-nam…  ┘   with your theme)
 ```
 
 ## Features
 
 - One row per tab, prefixed with its index (matches `GoToTab` numbers)
+- Long tab names end with a cell-aware `…` ellipsis instead of being cut off silently
 - Active tab highlighted using your zellij theme
 - Left-click a row to switch to that tab
 - Scroll wheel moves the list when tabs overflow the pane height; `▲`/`▼` markers indicate hidden rows
