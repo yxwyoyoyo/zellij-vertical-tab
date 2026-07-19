@@ -1,7 +1,7 @@
 ---
 type: Architecture Guide
 title: Plugin Architecture and Domain Model
-description: Runtime architecture of the pane-aware Zellij sidebar, covering adaptive rows, terminal-pane Codex status ownership, peer synchronization, rendering and input, and Zellij-owned mouse-resizable layout constraints.
+description: Runtime architecture of the pane-aware Zellij sidebar, covering native nested-list rendering, adaptive rows, terminal-pane Codex status ownership, peer synchronization, input, and Zellij-owned mouse-resizable layout constraints.
 resource: src/main.rs
 tags: [architecture, zellij, rust, wasm, codex, panes]
 ---
@@ -23,7 +23,7 @@ Codex hooks ──Zellij pipe> pane-keyed AgentRecord ──peer messages──>
                          render   scroll    click target
 ```
 
-`load()` records this sidebar's plugin ID; requests `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, and `MessageAndLaunchOtherPlugins`; and subscribes to `TabUpdate`, `PaneUpdate`, and `Mouse`. The first `update()` calls `set_selectable(false)` once. `render()` then emits host-themed `Text` rows with `print_text_with_coordinates`; `pipe()` validates external Codex updates and handles instance-to-instance synchronization (`src/main.rs`).
+`load()` records this sidebar's plugin ID; requests `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, and `MessageAndLaunchOtherPlugins`; and subscribes to `TabUpdate`, `PaneUpdate`, and `Mouse`. The first `update()` calls `set_selectable(false)` once. `render()` converts the visible hierarchy into `NestedListItem` values and emits one native list with `print_nested_list_with_coordinates`; `pipe()` validates external Codex updates and handles instance-to-instance synchronization (`src/main.rs`).
 
 The explicit `[[bin]]` target in `Cargo.toml` is required because Zellij loads a command-style WASM module with `_start`; `register_plugin!(State)` supplies its entrypoint. A non-WASM `host_run_plugin_command` stub keeps pure host-target tests linkable.
 
@@ -39,7 +39,7 @@ The explicit `[[bin]]` target in `Cargo.toml` is required because Zellij loads a
 | `scroll_offset`, `rows` | First flattened hierarchy row and last rendered viewport height |
 | `unselectable_set` | One-time guard for deferred selectability |
 
-Pane IDs, not tab names or pane titles, own agent state and pane click identity. Titles are presentation-only and fall back to `pane <id>` when empty. `TabInfo.position` remains zero-based internally and becomes one-based only for display and `switch_tab_to`.
+Pane IDs, not tab names or pane titles, own agent state and pane click identity. Titles are presentation-only and fall back to `pane <id>` when empty. `TabInfo.position` remains zero-based internally and becomes one-based only when passed to `switch_tab_to`; visible labels rely on the native `>` bulletin instead of repeating the position.
 
 ## Adaptive tab and pane hierarchy
 
@@ -89,11 +89,15 @@ There is no dominant-state precedence and no pane-count suffix in the current de
 
 ## Rendering and interaction rules
 
+### Native nested-list presentation
+
+Every visible `SidebarRow::Tab` becomes a level-zero native list item and every `SidebarRow::Pane` becomes a level-one item. Zellij supplies the `>` and `-` bulletins, indentation, bold labels, complete-row padding, and `list_selected`/`list_unselected` theme palettes. The `>` is the sole persistent leading marker for a tab, so the label does not repeat its one-based position. The active tab and focused visible pane child set the item's selected flag. Semantic badge ranges are applied to the native item before selection, so idle, working, waiting, and done colors remain theme-derived on both selected and unselected rows.
+
 ### Width-fitted rows and right inset
 
-Tab prefixes contain overflow lead, aligned one-based position, and a space. Pane prefixes retain the overflow lead and indent the title one cell beyond the tab-name column. The formatters use `unicode-width` cell measurements, never split a character, and append `…` when the name budget is exceeded.
+The native renderer consumes three cells before level-zero content and five before level-one content. Inside the remaining budget, both tab and pane content reserve one leading cell for an optional overflow marker; native child indentation deliberately places pane titles deeper than tab names. The formatters use `unicode-width` cell measurements, never split a character, and append `…` when the name budget is exceeded.
 
-Rows are padded to the exact `cols` width so selected background styling spans the line. `ROW_RIGHT_PADDING = 1` reserves one trailing cell whenever the required prefix or badge can still fit. Badge rows reserve the complete right-aligned glyph first, keep its state color range off the trailing cell, and truncate only the title. Extremely narrow rows degrade by preserving the protected prefix or badge rather than overflowing.
+Native list items are rendered to the exact `cols` width so selected background styling spans the line. `ROW_RIGHT_PADDING = 1` reserves one trailing content cell whenever the required prefix or badge can still fit. Badge rows reserve the complete right-aligned glyph first, keep its state color range off the trailing cell, and truncate only the title. Extremely narrow rows degrade by preserving the protected prefix or badge rather than overflowing.
 
 ### Viewport and overflow
 
@@ -126,7 +130,7 @@ Layout geometry is created when Zellij builds the tab. Hot reload cannot convert
 
 - **Zellij ABI:** `zellij-tile = 0.44.3` supplies lifecycle, pane metadata, pipes, peer messages, rendering, and focus/switch APIs.
 - **Codex hooks:** `hooks/codex/agent_status.py` maps lifecycle hooks and starts best-effort exit cleanup; `agent_notify.py` covers `agent-turn-complete` paths and can forward an existing notifier.
-- **OpenSpec:** current requirements live under `openspec/specs/`; archived designs explain decisions without becoming runtime input.
-- **Theme/font:** Zellij resolves selected and semantic text styling; Nerd Font Mono supplies single-cell status glyph metrics.
+- **OpenSpec:** current requirements live under `openspec/specs/`; the accepted native-list rationale and completion evidence are archived at `openspec/changes/archive/2026-07-19-refresh-zellij-native-sidebar-ui/`.
+- **Theme/font:** Zellij's native nested-list renderer resolves selected/unselected list styling, while semantic item ranges color badges; Nerd Font Mono supplies single-cell status glyph metrics.
 
 When changing hierarchy, preserve one `SidebarRow` source for render and input. When changing status, test protocol validation, stale ordering, pane reuse, tombstones, peer snapshots, and cardinality-based placement. When changing formatting, cover narrow widths, wide characters, badge preservation, pane indentation, and the right inset. The concrete checks live in [the testing strategy](development.md#testing-strategy).

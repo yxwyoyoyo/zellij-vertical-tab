@@ -3,15 +3,13 @@
 ## Purpose
 
 Define the user-visible behavior, interaction model, layout integration, and runtime safety constraints of the Zellij vertical tab sidebar.
-
 ## Requirements
-
 ### Requirement: Ordered vertical tab list
-The plugin SHALL render session tabs as a vertical list in Zellij tab-position order, with at most one tab per sidebar row.
+The plugin SHALL render session tabs as a vertical list in Zellij tab-position order, with at most one tab per sidebar row. The native top-level bulletin SHALL be the sole persistent leading marker; the plugin SHALL NOT repeat the tab's one-based position in its visible label.
 
 #### Scenario: Tabs are available
 - **WHEN** Zellij supplies a tab-state update
-- **THEN** each visible row shows the tab's one-based position followed by its name
+- **THEN** each visible row shows the tab's name without a displayed tab position
 - **AND** the row order matches the order supplied by Zellij
 
 #### Scenario: No tabs or no drawable area
@@ -92,8 +90,8 @@ Every rendered tab or pane row SHALL fit the sidebar's current content width and
 
 #### Scenario: Session has ten or more tabs
 - **WHEN** tab positions require multiple digits
-- **THEN** the plugin right-aligns all displayed positions to the width of the largest position
-- **AND** indents pane child titles one cell beyond the tab-name column
+- **THEN** the plugin does not display or reserve content cells for those positions
+- **AND** reserves the native component's top-level or child chrome before fitting each label
 
 #### Scenario: Row has no agent status
 - **WHEN** no agent status belongs on a rendered tab or pane row
@@ -178,3 +176,31 @@ The built plugin SHALL use the Zellij plugin ABI expected by the installed Zelli
 - **THEN** it targets `wasm32-wasip1`
 - **AND** it is built as a binary crate that exports `_start`
 - **AND** its `zellij-tile` version matches the Zellij binary version
+
+### Requirement: Zellij-native hierarchy presentation
+The sidebar SHALL render its visible tab and pane hierarchy using Zellij's native nested-list presentation and active theme rather than hard-coded colors or hand-built hierarchy spacing.
+
+#### Scenario: Tab row is rendered
+- **WHEN** a visible row represents a tab
+- **THEN** the row uses a top-level native list item with Zellij's tab-level bulletin, typography, and list styling
+- **AND** its fitted name, optional overflow indicator, and optional status badge remain visible within the available content width
+- **AND** the row does not repeat its one-based tab position after the native bulletin
+
+#### Scenario: Pane child row is rendered
+- **WHEN** a visible row represents a terminal pane in a multi-pane tab
+- **THEN** the row uses a level-one native list item with Zellij's child bulletin, indentation, typography, and list styling
+- **AND** its fitted pane title and optional status badge remain visible within the available content width
+
+#### Scenario: Active row is rendered
+- **WHEN** a row represents the active tab or focused pane child
+- **THEN** it uses Zellij's native selected-list styling across the complete sidebar width
+- **AND** any state-colored status badge retains its distinct theme-derived foreground treatment
+
+#### Scenario: Inactive row is rendered
+- **WHEN** a row represents neither the active tab nor the focused pane child
+- **THEN** it uses Zellij's native unselected-list styling
+
+#### Scenario: Sidebar is narrow
+- **WHEN** native list chrome, the row prefix, and an optional status badge leave limited content width
+- **THEN** the row preserves required chrome, prefix, and badge before truncating the name by terminal cells with an ellipsis
+- **AND** the rendered row does not exceed the sidebar width

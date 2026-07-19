@@ -1,17 +1,18 @@
 //! zellij-vertical-tab: renders the session's tabs vertically, with pane
-//! children for multi-pane tabs, inside a fixed-width unselectable side pane.
+//! children for multi-pane tabs, inside a flexible unselectable side pane.
 //!
 //! Interactions:
 //! - left-click a tab row to switch tabs or a pane row to focus that pane
 //! - scroll wheel moves the visible window when tabs overflow the pane height
 //! - the active tab is always kept inside the visible window
 //!
-//! Tab rows use `<lead><index> <name>`; indented pane rows appear immediately
+//! Tab rows use `<lead><name>`; native nested-list pane rows appear
+//! immediately
 //! below tabs with multiple terminals. `lead` is '▲' on the first visible row
 //! when hierarchy rows are hidden above, '▼' on the last visible row when rows
 //! are hidden below, and ' ' otherwise.
-//! Styling comes from `Text`/`ztext` sequences, which Zellij renders with the
-//! user's theme (active tab = `.selected()`).
+//! Styling comes from Zellij's native nested-list component, which renders
+//! hierarchy bullets plus selected and unselected rows with the user's theme.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -27,6 +28,8 @@ const AGENT_STATUS_SYNC_REQUEST: &str = "vertical-tab-agent-status-sync-request"
 const AGENT_STATUS_SYNC_SNAPSHOT: &str = "vertical-tab-agent-status-sync-snapshot";
 const AGENT_STATUS_VERSION: u8 = 1;
 const ROW_RIGHT_PADDING: usize = 1;
+const TAB_LIST_CHROME_WIDTH: usize = 3;
+const PANE_LIST_CHROME_WIDTH: usize = 5;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -154,6 +157,16 @@ impl SidebarRow {
             Self::Tab { state, .. } | Self::Pane { state, .. } => *state,
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NativeListRow {
+    content: String,
+    indentation: usize,
+    selected: bool,
+    state: Option<AgentState>,
+    badge_chars: usize,
+    trailing_chars: usize,
 }
 
 // `host_run_plugin_command` is normally provided by the Zellij wasm runtime.
@@ -371,10 +384,7 @@ impl ZellijPlugin for State {
 
         let offset = self.scroll_offset;
         let visible_count = rows.min(sidebar_rows.len() - offset);
-        // Keep indices right-aligned even when the count rolls past 9.
-        let index_width = self.tabs.len().to_string().len();
-
-        for i in 0..visible_count {
+        let native_rows = (0..visible_count).map(|i| {
             let sidebar_row = &sidebar_rows[offset + i];
             let lead = if i == 0 && offset > 0 {
                 ARROW_UP
@@ -383,32 +393,10 @@ impl ZellijPlugin for State {
             } else {
                 ' '
             };
-            let state = sidebar_row.state();
-            let badge = state.map(AgentState::glyph);
-            let row = match sidebar_row {
-                SidebarRow::Tab { position, name, .. } => {
-                    format_row(lead, position + 1, index_width, name, badge, cols)
-                }
-                SidebarRow::Pane { title, .. } => {
-                    format_pane_row(lead, index_width, title, badge, cols)
-                }
-            };
-            let mut text = Text::new(row);
-            if let (Some(state), Some(badge)) = (state, badge) {
-                text = color_agent_badge(
-                    text,
-                    state,
-                    badge.chars().count(),
-                    badge_right_padding(cols, display_width(badge)),
-                );
-            }
-            let text = if sidebar_row.is_selected() {
-                text.selected()
-            } else {
-                text
-            };
-            print_text_with_coordinates(text, 0, i, Some(cols), Some(1));
-        }
+            native_list_row(sidebar_row, lead, cols)
+        });
+        let items = native_rows.map(native_list_item).collect();
+        print_nested_list_with_coordinates(items, 0, 0, Some(cols), Some(visible_count));
     }
 }
 
@@ -675,28 +663,72 @@ fn visible_window(row_count: usize, active: Option<usize>, prev: usize, rows: us
 }
 
 /// Build one tab row with an optional right-aligned status badge.
-fn format_row(
-    lead: char,
-    index: usize,
-    index_width: usize,
-    name: &str,
-    badge: Option<&str>,
-    width: usize,
-) -> String {
-    let prefix = format!("{}{:>iw$} ", lead, index, iw = index_width);
+fn format_row(lead: char, name: &str, badge: Option<&str>, width: usize) -> String {
+    let prefix = lead.to_string();
     format_named_row(&prefix, name, badge, width)
 }
 
 /// Build an indented pane-child row with an optional right-aligned badge.
-fn format_pane_row(
-    lead: char,
-    index_width: usize,
-    title: &str,
-    badge: Option<&str>,
-    width: usize,
-) -> String {
-    let prefix = format!("{lead}{}", " ".repeat(index_width + 2));
+fn format_pane_row(lead: char, title: &str, badge: Option<&str>, width: usize) -> String {
+    let prefix = lead.to_string();
     format_named_row(&prefix, title, badge, width)
+}
+
+fn native_list_row(sidebar_row: &SidebarRow, lead: char, cols: usize) -> NativeListRow {
+    let state = sidebar_row.state();
+    let badge = state.map(AgentState::glyph);
+    let (content, indentation, content_width) = match sidebar_row {
+        SidebarRow::Tab { name, .. } => {
+            let content_width = cols.saturating_sub(TAB_LIST_CHROME_WIDTH);
+            (
+                format_row(lead, name, badge, content_width),
+                0,
+                content_width,
+            )
+        }
+        SidebarRow::Pane { title, .. } => {
+            let content_width = cols.saturating_sub(PANE_LIST_CHROME_WIDTH);
+            (
+                format_pane_row(lead, title, badge, content_width),
+                1,
+                content_width,
+            )
+        }
+    };
+    let (badge_chars, trailing_chars) = badge
+        .map(|badge| {
+            (
+                badge.chars().count(),
+                badge_right_padding(content_width, display_width(badge)),
+            )
+        })
+        .unwrap_or_default();
+    NativeListRow {
+        content,
+        indentation,
+        selected: sidebar_row.is_selected(),
+        state,
+        badge_chars,
+        trailing_chars,
+    }
+}
+
+fn native_list_item(row: NativeListRow) -> NestedListItem {
+    let content_chars = row.content.chars().count();
+    let mut item = NestedListItem::new(row.content).indent(row.indentation);
+    if let Some(state) = row.state {
+        item = color_agent_badge_item(
+            item,
+            state,
+            content_chars,
+            row.badge_chars,
+            row.trailing_chars,
+        );
+    }
+    if row.selected {
+        item = item.selected();
+    }
+    item
 }
 
 fn format_named_row(prefix: &str, name: &str, badge: Option<&str>, width: usize) -> String {
@@ -742,19 +774,20 @@ fn display_width(value: &str) -> usize {
         .sum()
 }
 
-fn color_agent_badge(
-    text: Text,
+fn color_agent_badge_item(
+    item: NestedListItem,
     state: AgentState,
+    content_chars: usize,
     badge_chars: usize,
     trailing_chars: usize,
-) -> Text {
-    let badge_end = text.len().saturating_sub(trailing_chars);
+) -> NestedListItem {
+    let badge_end = content_chars.saturating_sub(trailing_chars);
     let badge_start = badge_end.saturating_sub(badge_chars);
     match state.badge_color() {
-        BadgeColor::Dim => text.dim_range(badge_start..badge_end),
-        BadgeColor::Emphasis(level) => text.color_range(level, badge_start..badge_end),
-        BadgeColor::Success => text.success_color_range(badge_start..badge_end),
-        BadgeColor::None => text,
+        BadgeColor::Dim => item.color_range(4, badge_start..badge_end),
+        BadgeColor::Emphasis(level) => item.color_range(level, badge_start..badge_end),
+        BadgeColor::Success => item.success_color_range(badge_start..badge_end),
+        BadgeColor::None => item,
     }
 }
 
@@ -896,46 +929,96 @@ mod tests {
 
     #[test]
     fn row_format_pads_to_width() {
-        assert_eq!(format_row(' ', 3, 1, "work", None, 10), " 3 work   ");
+        assert_eq!(format_row(' ', "work", None, 10), " work     ");
     }
 
     #[test]
-    fn row_format_aligns_double_digit_indices() {
-        assert_eq!(format_row(ARROW_DOWN, 10, 2, "x", None, 8), "▼10 x   ");
-        assert_eq!(format_row(ARROW_UP, 9, 2, "x", None, 8), "▲ 9 x   ");
+    fn row_format_keeps_overflow_lead_without_a_tab_index() {
+        assert_eq!(format_row(ARROW_DOWN, "x", None, 8), "▼x      ");
+        assert_eq!(format_row(ARROW_UP, "x", None, 8), "▲x      ");
     }
 
     #[test]
     fn row_format_ellipsizes_long_ascii_name() {
-        assert_eq!(
-            format_row(' ', 1, 1, "very-long-name", None, 10),
-            " 1 very-… "
-        );
+        assert_eq!(format_row(' ', "very-long-name", None, 10), " very-lo… ");
     }
 
     #[test]
     fn row_format_ellipsizes_wide_name_by_terminal_cells() {
-        let row = format_row(' ', 1, 1, "界界界界", None, 9);
-        assert_eq!(row, " 1 界界… ");
+        let row = format_row(' ', "界界界界", None, 9);
+        assert_eq!(row, " 界界界… ");
         assert_eq!(display_width(&row), 9);
     }
 
     #[test]
-    fn row_format_omits_name_when_prefix_fills_width() {
-        assert_eq!(format_row(' ', 1, 1, "overflow", None, 3), " 1 ");
-        assert_eq!(format_row(' ', 1, 1, "overflow", None, 2), " 1");
-        assert_eq!(format_row(' ', 1, 1, "overflow", Some(""), 5), " 1  ");
+    fn row_format_preserves_lead_or_badge_at_extreme_widths() {
+        assert_eq!(format_row(' ', "overflow", None, 1), " ");
+        assert_eq!(format_row(' ', "overflow", None, 0), "");
+        assert_eq!(format_row(' ', "overflow", Some(""), 3), "  ");
     }
 
     #[test]
     fn pane_row_is_indented_and_ellipsized_by_terminal_cells() {
         assert_eq!(
-            format_pane_row(' ', 1, "very-long-pane", Some(""), 12),
-            "    very…  "
+            format_pane_row(' ', "very-long-pane", Some(""), 12),
+            " very-lo…  "
         );
-        let wide = format_pane_row(ARROW_UP, 2, "界界界界", None, 12);
-        assert_eq!(wide, "▲    界界…  ");
+        let wide = format_pane_row(ARROW_UP, "界界界界", None, 12);
+        assert_eq!(wide, "▲界界界界   ");
         assert_eq!(display_width(&wide), 12);
+    }
+
+    #[test]
+    fn native_list_rows_reserve_component_chrome_and_map_hierarchy() {
+        let tab_row = SidebarRow::Tab {
+            position: 0,
+            name: "very-long-tab-name".to_owned(),
+            active: true,
+            state: Some(AgentState::Done),
+        };
+        let pane_row = SidebarRow::Pane {
+            id: 42,
+            title: "very-long-pane-name".to_owned(),
+            focused: false,
+            state: Some(AgentState::Working),
+        };
+
+        let tab = native_list_row(&tab_row, ' ', 15);
+        let pane = native_list_row(&pane_row, ' ', 15);
+
+        assert_eq!(tab.indentation, 0);
+        assert!(tab.selected);
+        assert_eq!(display_width(&tab.content), 12);
+        assert!(tab.content.ends_with(" "));
+        assert_eq!(pane.indentation, 1);
+        assert!(!pane.selected);
+        assert_eq!(display_width(&pane.content), 10);
+        assert!(pane.content.ends_with(" "));
+        assert_eq!(tab_row.target(), RowTarget::Tab { position: 0 });
+        assert_eq!(pane_row.target(), RowTarget::Pane { id: 42 });
+    }
+
+    #[test]
+    fn native_list_rows_preserve_badges_at_narrow_widths() {
+        let tab_row = SidebarRow::Tab {
+            position: 0,
+            name: "overflow".to_owned(),
+            active: false,
+            state: Some(AgentState::Working),
+        };
+        let pane_row = SidebarRow::Pane {
+            id: 42,
+            title: "overflow".to_owned(),
+            focused: true,
+            state: Some(AgentState::Waiting),
+        };
+
+        let tab = native_list_row(&tab_row, ' ', 8);
+        let pane = native_list_row(&pane_row, ' ', 8);
+
+        assert_eq!(tab.content, " …  ");
+        assert_eq!(pane.content, "  ");
+        assert!(pane.selected);
     }
 
     #[test]
@@ -1352,18 +1435,15 @@ mod tests {
 
     #[test]
     fn badge_is_right_aligned_and_preserved_when_name_is_long() {
-        assert_eq!(format_row(' ', 1, 1, "work", Some(""), 10), " 1 work  ");
+        assert_eq!(format_row(' ', "work", Some(""), 10), " work    ");
         assert_eq!(
-            format_row(' ', 1, 1, "very-long-name", Some(""), 10),
-            " 1 ver…  "
+            format_row(' ', "very-long-name", Some(""), 10),
+            " very-…  "
         );
-        assert_eq!(format_row(' ', 1, 1, "x", Some(""), 1), "");
-        assert_eq!(format_row(' ', 1, 1, "x", Some(""), 2), " ");
-        assert_eq!(
-            format_row(' ', 1, 1, "界界界界", Some(""), 10),
-            " 1 界…   "
-        );
-        assert_eq!(display_width(" 1 界…   "), 10);
+        assert_eq!(format_row(' ', "x", Some(""), 1), "");
+        assert_eq!(format_row(' ', "x", Some(""), 2), " ");
+        assert_eq!(format_row(' ', "界界界界", Some(""), 10), " 界界…   ");
+        assert_eq!(display_width(" 界界…   "), 10);
     }
 
     #[test]
@@ -1389,9 +1469,17 @@ mod tests {
 
     #[test]
     fn complete_badge_is_colored_and_selected_row_is_retained() {
-        let text = color_agent_badge(Text::new(" 1 work  "), AgentState::Working, 1, 1).selected();
-        let serialized = text.serialize();
+        let content = " 1 work  ";
+        let item = color_agent_badge_item(
+            NestedListItem::new(content).indent(1),
+            AgentState::Working,
+            content.chars().count(),
+            1,
+            1,
+        )
+        .selected();
+        let serialized = item.serialize();
 
-        assert!(serialized.starts_with("x$8$"));
+        assert!(serialized.starts_with("|x$8$"));
     }
 }
