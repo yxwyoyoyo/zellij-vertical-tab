@@ -3,19 +3,19 @@
 A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertically** in a mouse-resizable side pane, replacing the horizontal tab-bar. Multi-pane tabs include indented pane rows so agent state remains attached to the pane that owns it.
 
 ```
- 1 editor           ┐
- 2 services          │  one-pane tabs stay compact
-    api             │  multi-pane tabs show children
-    database        │  with per-pane agent status
-▲3 very-long-tab-name…┘
+ > editor                 ┐
+ > services                │  one-pane tabs stay compact
+   - api                 │  multi-pane tabs use Zellij's
+   - database            │  native nested-list hierarchy
+ > ▲very-long-tab-name…  ┘
 ```
 
 ## Features
 
-- One compact row for tabs with zero or one terminal pane, prefixed with its index (matches `GoToTab` numbers)
-- Indented, always-visible terminal-pane rows under tabs containing multiple panes; no expand/collapse control
+- One compact row for tabs with zero or one terminal pane; the native `>` bulletin is the sole leading marker, without a redundant displayed tab number
+- Zellij-native `>` tab bullets and indented `-` terminal-pane bullets, styled from the active theme; no expand/collapse control
 - Rows keep a one-cell right edge inset; long tab and pane names end with a cell-aware `…` ellipsis instead of being cut off silently
-- Active tab highlighted using your zellij theme
+- Active tabs and focused pane rows use Zellij's full-width selected-list styling
 - Left-click a tab row to switch tabs or a pane row to focus that exact pane
 - Scroll wheel moves the flattened tab-and-pane list when it overflows the pane height; `▲`/`▼` markers indicate hidden rows
 - The active tab is always kept in view (follows keyboard tab switching)
@@ -145,7 +145,7 @@ verification, status restoration, documentation, and release workflows.
 
 - The plugin is a **bin crate**: zellij requires the wasm module to export `_start` (command-style module), which only bin targets provide. `register_plugin!` generates `main()`.
 - `set_selectable(false)` makes the pane unfocusable (same pattern as the built-in tab-bar). On zellij 0.44 it must not be called during initial startup when the pane lives in a `default_tab_template`, so the plugin defers it to the first event. The percentage layout keeps the pane flexible so Zellij's native boundary drag can resize it.
-- Rendering uses `Text`/`print_text_with_coordinates` (`ztext` APC sequences) so colors always follow the user's theme; active tab and focused pane rows are `.selected()` and padded to full width.
+- Rendering uses Zellij's `NestedListItem` component, including its native hierarchy bullets, selected/unselected list colors, bold text, and full-width selection surface. Badge ranges layer their semantic theme colors onto the same list items.
 - `PaneUpdate` associates terminal panes with tabs and supplies pane titles, focus, layers, and geometry. The plugin flattens tabs and multi-pane children into the same row model used by rendering, scrolling, and mouse input.
 - The `vertical-tab-agent-status` Zellij pipe carries versioned lifecycle messages from the user-level Codex hook. The plugin keeps only the newest session record per terminal pane and places it on the compact tab row or exact pane child as appropriate.
 

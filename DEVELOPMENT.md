@@ -90,7 +90,7 @@ not reconstruct pane geometry.
 
 | Change | Minimum during iteration | Before merge |
 | --- | --- | --- |
-| Pure formatting or row model | `mise run test` | `mise run check`, live reload |
+| Pure formatting or row model | `mise run test` | `mise run check`, live reload with native list selection and hierarchy |
 | Codex hook/protocol | `mise run test` | `mise run check`, two-session status test |
 | Pane focus/scroll/input | `mise run test`, live reload | `mise run check`, multi-tab/multi-pane test |
 | Sidebar layout/resize | fresh disposable session | drag the sidebar/content boundary and compare pane geometry before/after |
@@ -98,10 +98,10 @@ not reconstruct pane geometry.
 | Zellij version/ABI | host tests plus WASM build | full fresh-session matrix; versions must match |
 | Documentation only | link and terminology review | `git diff --check` |
 
-The live pane-aware matrix should cover compact one-pane tabs, multi-pane child
-rows, independent statuses in two tabs, exact pane clicks after scrolling,
-wide/long titles, right-edge spacing, peer status synchronization, and status
-cleanup after Codex exits.
+The live pane-aware matrix should cover compact one-pane tabs, native `>`/`-`
+hierarchy and selected surfaces, multi-pane child rows, independent statuses in
+two tabs, exact pane clicks after scrolling, wide/long titles, right-edge
+spacing, peer status synchronization, and status cleanup after Codex exits.
 
 ## Release and install
 

@@ -1,7 +1,7 @@
 ---
 type: Engineering Runbook
 title: Development, Testing, and Operations
-description: Mise-managed runbook for building, testing, releasing, installing, hot-reloading, fresh-session layout verification, and troubleshooting the pane-aware zellij-vertical-tab plugin and its Codex status bridge.
+description: Mise-managed runbook for building, testing, releasing, installing, hot-reloading, and verifying the pane-aware zellij-vertical-tab plugin, including native nested-list presentation, mouse-resizable layout, and Codex status badges.
 resource: AGENTS.md
 tags: [development, testing, operations, mise, zellij, codex]
 ---
@@ -31,7 +31,7 @@ mise run dev   # build, then launch zellij.kdl
 mise run check # complete pre-PR gate
 ```
 
-The host Rust tests exercise pure status, pane hierarchy, row target, viewport, cell-width, inset, and styling helpers. The Python tests exercise lifecycle mapping, process-exit cleanup, completion notification parsing, and notifier forwarding. The debug artifact is `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm`.
+The host Rust tests exercise pure status, pane hierarchy, native list-row mapping, row target, viewport, cell-width, inset, and styling helpers. The Python tests exercise lifecycle mapping, process-exit cleanup, completion notification parsing, and notifier forwarding. The debug artifact is `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm`.
 
 ### Development launch, reload, and status restoration
 
@@ -84,7 +84,7 @@ Run `mise run test`; its Rust tests are colocated in `src/main.rs` and currently
 - focused tiled/floating child selection and empty-title fallback;
 - exact tab versus pane row targets;
 - payload validation, timestamps, pane reuse, clear tombstones, cleanup, peer discovery, and snapshots;
-- cell-aware truncation, wide characters, ellipsis, index/pane alignment, badge preservation, one-cell inset, and theme styling.
+- cell-aware truncation, wide characters, ellipsis, index-free labels and overflow leads, native chrome budgets and hierarchy levels, badge preservation, one-cell inset, and theme styling.
 
 Keep runtime host calls out of these tests unless a proper mock layer is introduced; the non-WASM import stub exists only to link pure tests.
 
@@ -114,12 +114,12 @@ Unset the Zellij variables so the process does not think it is nested. The input
 1. startup survives permission grant and renders a sidebar initially sized to 13% with no horizontal tab bar;
 2. with normal Zellij mouse handling, dragging the sidebar/content boundary changes the current tab's sidebar width even when pane frames are hidden; a new tab starts at 13% rather than inheriting that width;
 3. one-pane tabs stay compact, while a multi-pane tab lists all terminal panes and excludes plugin panes;
-4. pane children follow tiled/floating/suppressed visual order and the focused visible-layer child is selected;
-5. one-pane status appears on the tab, multi-pane statuses remain on exact children, and no aggregate/count appears;
+4. tab and child rows use native `>`/`-` list bulletins, the active tab and focused visible-layer child use complete-row selected-list styling, and children follow tiled/floating/suppressed visual order;
+5. one-pane status appears on the tab, multi-pane statuses remain on exact children, and no aggregate/count appears; on selected and unselected rows, verify idle remains dim, working cyan, waiting orange, and done green under the active theme;
 6. a new tab's sidebar obtains current statuses from an existing peer;
 7. a tab-row click switches tabs, while a pane-row click focuses that exact pane, including after scrolling;
-8. long ASCII/wide names ellipsize, badges remain intact, and every normal-width row keeps its rightmost cell blank;
-9. wheel overflow and keyboard tab switching operate on the flattened hierarchy.
+8. at narrow and wide sidebar widths, long ASCII/wide names ellipsize after native list chrome, badges remain intact, and every normal-width row keeps its rightmost cell blank;
+9. wheel overflow and keyboard tab switching operate on the same flattened hierarchy, with `▲`/`▼` marking hidden rows.
 
 ## Runbook
 
