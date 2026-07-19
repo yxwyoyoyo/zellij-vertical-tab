@@ -30,6 +30,7 @@ const AGENT_STATUS_VERSION: u8 = 1;
 const ROW_RIGHT_PADDING: usize = 1;
 const TAB_LIST_CHROME_WIDTH: usize = 3;
 const PANE_LIST_CHROME_WIDTH: usize = 5;
+const ATTENTION_GLYPH: &str = "";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -126,6 +127,7 @@ enum SidebarRow {
         name: String,
         active: bool,
         state: Option<AgentState>,
+        attention: bool,
     },
     Pane {
         id: u32,
@@ -157,6 +159,16 @@ impl SidebarRow {
             Self::Tab { state, .. } | Self::Pane { state, .. } => *state,
         }
     }
+
+    fn has_attention(&self) -> bool {
+        matches!(
+            self,
+            Self::Tab {
+                attention: true,
+                ..
+            }
+        )
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -166,6 +178,7 @@ struct NativeListRow {
     selected: bool,
     state: Option<AgentState>,
     badge_chars: usize,
+    attention_chars: usize,
     trailing_chars: usize,
 }
 
@@ -566,6 +579,7 @@ fn build_sidebar_rows(
             name: tab.name.clone(),
             active: tab.active,
             state,
+            attention: tab.has_bell_notification,
         });
 
         if panes.len() > 1 {
@@ -665,50 +679,56 @@ fn visible_window(row_count: usize, active: Option<usize>, prev: usize, rows: us
 /// Build one tab row with an optional right-aligned status badge.
 fn format_row(lead: char, name: &str, badge: Option<&str>, width: usize) -> String {
     let prefix = lead.to_string();
-    format_named_row(&prefix, name, badge, width)
+    format_named_row(&prefix, name, badge, false, width)
 }
 
 /// Build an indented pane-child row with an optional right-aligned badge.
 fn format_pane_row(lead: char, title: &str, badge: Option<&str>, width: usize) -> String {
     let prefix = lead.to_string();
-    format_named_row(&prefix, title, badge, width)
+    format_named_row(&prefix, title, badge, false, width)
 }
 
 fn native_list_row(sidebar_row: &SidebarRow, lead: char, cols: usize) -> NativeListRow {
     let state = sidebar_row.state();
-    let badge = state.map(AgentState::glyph);
-    let (content, indentation, content_width) = match sidebar_row {
-        SidebarRow::Tab { name, .. } => {
+    let attention = sidebar_row.has_attention();
+    let (indentation, content_width) = match sidebar_row {
+        SidebarRow::Tab { .. } => {
             let content_width = cols.saturating_sub(TAB_LIST_CHROME_WIDTH);
-            (
-                format_row(lead, name, badge, content_width),
-                0,
-                content_width,
-            )
+            (0, content_width)
         }
-        SidebarRow::Pane { title, .. } => {
+        SidebarRow::Pane { .. } => {
             let content_width = cols.saturating_sub(PANE_LIST_CHROME_WIDTH);
-            (
-                format_pane_row(lead, title, badge, content_width),
-                1,
-                content_width,
-            )
+            (1, content_width)
         }
     };
-    let (badge_chars, trailing_chars) = badge
-        .map(|badge| {
-            (
-                badge.chars().count(),
-                badge_right_padding(content_width, display_width(badge)),
-            )
-        })
-        .unwrap_or_default();
+    let requested_badge = state.map(AgentState::glyph);
+    let badge = if attention
+        && format_suffix(requested_badge, true)
+            .is_some_and(|suffix| display_width(&suffix) > content_width)
+    {
+        None
+    } else {
+        requested_badge
+    };
+    let content = match sidebar_row {
+        SidebarRow::Tab { name, .. } if attention => {
+            format_named_row(&lead.to_string(), name, badge, true, content_width)
+        }
+        SidebarRow::Tab { name, .. } => format_row(lead, name, badge, content_width),
+        SidebarRow::Pane { title, .. } => format_pane_row(lead, title, badge, content_width),
+    };
+    let suffix = format_suffix(badge, attention);
+    let trailing_chars = suffix
+        .as_deref()
+        .map(|suffix| badge_right_padding(content_width, display_width(suffix)))
+        .unwrap_or_else(|| row_right_padding(content_width, display_width(&lead.to_string())));
     NativeListRow {
         content,
         indentation,
         selected: sidebar_row.is_selected(),
-        state,
-        badge_chars,
+        state: badge.and(state),
+        badge_chars: badge.map(|badge| badge.chars().count()).unwrap_or_default(),
+        attention_chars: usize::from(attention) * ATTENTION_GLYPH.chars().count(),
         trailing_chars,
     }
 }
@@ -722,6 +742,15 @@ fn native_list_item(row: NativeListRow) -> NestedListItem {
             state,
             content_chars,
             row.badge_chars,
+            row.attention_chars,
+            row.trailing_chars,
+        );
+    }
+    if row.attention_chars > 0 {
+        item = color_attention_badge_item(
+            item,
+            content_chars,
+            row.attention_chars,
             row.trailing_chars,
         );
     }
@@ -731,8 +760,23 @@ fn native_list_item(row: NativeListRow) -> NestedListItem {
     item
 }
 
-fn format_named_row(prefix: &str, name: &str, badge: Option<&str>, width: usize) -> String {
-    let Some(badge) = badge.filter(|badge| !badge.is_empty()) else {
+fn format_suffix(badge: Option<&str>, attention: bool) -> Option<String> {
+    match (badge.filter(|badge| !badge.is_empty()), attention) {
+        (Some(badge), true) => Some(format!("{badge} {ATTENTION_GLYPH}")),
+        (Some(badge), false) => Some(badge.to_owned()),
+        (None, true) => Some(ATTENTION_GLYPH.to_owned()),
+        (None, false) => None,
+    }
+}
+
+fn format_named_row(
+    prefix: &str,
+    name: &str,
+    badge: Option<&str>,
+    attention: bool,
+    width: usize,
+) -> String {
+    let Some(suffix) = format_suffix(badge, attention) else {
         let right_padding = row_right_padding(width, display_width(prefix));
         return format!(
             "{}{}",
@@ -740,13 +784,13 @@ fn format_named_row(prefix: &str, name: &str, badge: Option<&str>, width: usize)
             " ".repeat(right_padding)
         );
     };
-    let badge_width = display_width(badge);
-    let right_padding = badge_right_padding(width, badge_width);
-    let reserved_width = badge_width + right_padding;
+    let suffix_width = display_width(&suffix);
+    let right_padding = badge_right_padding(width, suffix_width);
+    let reserved_width = suffix_width + right_padding;
     if reserved_width >= width {
         return format!(
             "{}{}",
-            fit_to_width(badge, width.saturating_sub(right_padding)),
+            fit_to_width(&suffix, width.saturating_sub(right_padding)),
             " ".repeat(right_padding)
         );
     }
@@ -754,7 +798,7 @@ fn format_named_row(prefix: &str, name: &str, badge: Option<&str>, width: usize)
     format!(
         "{} {}{}",
         fit_tab_body(prefix, name, body_width),
-        badge,
+        suffix,
         " ".repeat(right_padding)
     )
 }
@@ -779,9 +823,13 @@ fn color_agent_badge_item(
     state: AgentState,
     content_chars: usize,
     badge_chars: usize,
+    attention_chars: usize,
     trailing_chars: usize,
 ) -> NestedListItem {
-    let badge_end = content_chars.saturating_sub(trailing_chars);
+    let attention_offset = attention_chars + usize::from(attention_chars > 0);
+    let badge_end = content_chars
+        .saturating_sub(trailing_chars)
+        .saturating_sub(attention_offset);
     let badge_start = badge_end.saturating_sub(badge_chars);
     match state.badge_color() {
         BadgeColor::Dim => item.color_range(4, badge_start..badge_end),
@@ -789,6 +837,17 @@ fn color_agent_badge_item(
         BadgeColor::Success => item.success_color_range(badge_start..badge_end),
         BadgeColor::None => item,
     }
+}
+
+fn color_attention_badge_item(
+    item: NestedListItem,
+    content_chars: usize,
+    attention_chars: usize,
+    trailing_chars: usize,
+) -> NestedListItem {
+    let attention_end = content_chars.saturating_sub(trailing_chars);
+    let attention_start = attention_end.saturating_sub(attention_chars);
+    item.color_range(0, attention_start..attention_end)
 }
 
 fn fit_tab_body(prefix: &str, name: &str, width: usize) -> String {
@@ -975,6 +1034,7 @@ mod tests {
             name: "very-long-tab-name".to_owned(),
             active: true,
             state: Some(AgentState::Done),
+            attention: false,
         };
         let pane_row = SidebarRow::Pane {
             id: 42,
@@ -1005,6 +1065,7 @@ mod tests {
             name: "overflow".to_owned(),
             active: false,
             state: Some(AgentState::Working),
+            attention: false,
         };
         let pane_row = SidebarRow::Pane {
             id: 42,
@@ -1294,12 +1355,14 @@ mod tests {
                     name: "single".to_owned(),
                     active: true,
                     state: Some(AgentState::Done),
+                    attention: false,
                 },
                 SidebarRow::Tab {
                     position: 1,
                     name: "multiple".to_owned(),
                     active: false,
                     state: None,
+                    attention: false,
                 },
                 SidebarRow::Pane {
                     id: 2,
@@ -1316,6 +1379,61 @@ mod tests {
             ]
         );
         assert_eq!(active_tab_row(&rows), Some(0));
+    }
+
+    #[test]
+    fn native_bell_attention_stays_on_tab_while_pane_status_stays_exact() {
+        let mut single = tab(0, "single", false);
+        single.has_bell_notification = true;
+        let mut multiple = tab(1, "multiple", false);
+        multiple.has_bell_notification = true;
+        let tabs = vec![single, multiple];
+        let panes = HashMap::from([
+            (
+                0,
+                vec![terminal_pane(1, "shell", false, false, false, 0, 0)],
+            ),
+            (
+                1,
+                vec![
+                    terminal_pane(2, "api", false, false, false, 0, 0),
+                    terminal_pane(3, "database", false, false, false, 40, 0),
+                ],
+            ),
+        ]);
+        let records = HashMap::from([
+            (1, agent_record(AgentState::Done)),
+            (2, agent_record(AgentState::Waiting)),
+        ]);
+
+        let rows = build_sidebar_rows(&tabs, &panes, &records);
+        assert!(rows[0].has_attention());
+        assert_eq!(rows[0].state(), Some(AgentState::Done));
+        assert!(rows[1].has_attention());
+        assert_eq!(rows[1].state(), None);
+        assert!(!rows[2].has_attention());
+        assert_eq!(rows[2].state(), Some(AgentState::Waiting));
+
+        assert!(native_list_row(&rows[0], ' ', 15).content.ends_with("  "));
+        assert!(native_list_row(&rows[1], ' ', 15).content.ends_with(" "));
+        assert!(native_list_row(&rows[2], ' ', 15).content.ends_with(" "));
+    }
+
+    #[test]
+    fn attention_icon_is_single_cell_and_wins_at_extreme_widths() {
+        assert_eq!(display_width(ATTENTION_GLYPH), 1);
+        let row = SidebarRow::Tab {
+            position: 0,
+            name: "narrow".to_owned(),
+            active: false,
+            state: Some(AgentState::Done),
+            attention: true,
+        };
+
+        let rendered = native_list_row(&row, ' ', TAB_LIST_CHROME_WIDTH + 2);
+        assert_eq!(rendered.content, " ");
+        assert_eq!(rendered.state, None);
+        assert_eq!(rendered.attention_chars, 1);
     }
 
     #[test]
@@ -1380,6 +1498,7 @@ mod tests {
             name: "tab".to_owned(),
             active: false,
             state: None,
+            attention: false,
         };
         let pane_row = SidebarRow::Pane {
             id: 42,
@@ -1475,6 +1594,7 @@ mod tests {
             AgentState::Working,
             content.chars().count(),
             1,
+            0,
             1,
         )
         .selected();
