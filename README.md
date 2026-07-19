@@ -21,6 +21,7 @@ A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertical
 - The active tab is always kept in view (follows keyboard tab switching)
 - Codex lifecycle status shown as a right-aligned badge, vertically aligned and theme-colored: dim `` idle, cyan `` working, orange `` waiting for permission, or green `` answer ready
 - Multiple panes in one tab show their Codex state independently on each pane row without an agent-name prefix
+- Answer-ready and approval events use Zellij's native visual bell and retain an orange `` attention icon on an inactive owning tab until Zellij acknowledges it
 
 ## Requirements
 
@@ -61,6 +62,11 @@ If `~/.codex/hooks.json` already exists, merge the entries instead of replacing 
 
 ```toml
 notify = ["/usr/bin/python3", "/Users/you/.codex/hooks/agent_notify.py"]
+
+[tui]
+notifications = ["agent-turn-complete", "approval-requested"]
+notification_method = "bel"
+notification_condition = "always"
 ```
 
 If you already have a notifier, preserve it by forwarding the original command and arguments before the final `--`:
@@ -70,6 +76,8 @@ notify = ["/usr/bin/python3", "/Users/you/.codex/hooks/agent_notify.py", "--forw
 ```
 
 Codex runs the lifecycle bridge at session, prompt, pre-tool, permission, and stop boundaries. The external notifier covers completion paths such as code review that can omit `Stop`. Inside Zellij, both bridges publish a small versioned JSON message to the plugin; outside Zellij they exit successfully without changing status. Because Codex has no session-exit hook, the session-start handler also launches a detached watcher that clears the badge when that Codex process exits.
+
+The TUI notification settings are independent of the external `notify` bridge: when a Codex turn completes or needs approval, Codex emits BEL. `always` is required because switching Zellij panes or tabs does not make Codex's terminal-focus detector report `unfocused` in every terminal setup. Zellij flashes an active tab or retains native bell state for an inactive tab, and the sidebar shows `` on a retained tab until Zellij clears it. Start a new Codex session after changing `config.toml`. Zellij exposes retained bell ownership per tab, so a multi-pane tab keeps the bell on its parent row while each pane child keeps its exact Codex status.
 
 1. Start Codex from this repository inside a Zellij terminal pane.
 2. Open `/hooks` in Codex and trust the user hook when prompted.
@@ -81,10 +89,11 @@ Codex runs the lifecycle bridge at session, prompt, pre-tool, permission, and st
    | `` | Codex is working |
    | `` | Codex is waiting for permission |
    | `` | Codex has delivered an answer |
+   | `` | Zellij has retained attention for this tab |
 
 Status is tracked per terminal pane. A tab with one terminal pane keeps the badge on its compact tab row. A tab with multiple terminal panes shows all pane titles beneath the tab and puts each badge on its owning pane row; the parent tab has no duplicate aggregate badge. Tiled panes are ordered by screen position, followed by floating and suppressed panes.
 
-Badge colors come from the active Zellij theme: idle is dimmed, working uses cyan emphasis, waiting uses orange emphasis, and done uses the success color. Selected tabs and the focused pane child retain full-row selected styling.
+Badge colors come from the active Zellij theme: idle is dimmed, working uses cyan emphasis, waiting and native bell attention use orange emphasis, and done uses the success color. Selected tabs and the focused pane child retain full-row selected styling.
 
 Closing a pane or exiting Codex clears its status, and starting a new Codex session in a reused pane replaces the old session. Codex initializes lifecycle hooks lazily, so a newly opened TUI may not show `` until its first prompt is submitted. Exit cleanup is best-effort if the bridge cannot identify the Codex ancestor process; closing the pane still clears the record.
 
@@ -147,6 +156,7 @@ verification, status restoration, documentation, and release workflows.
 - `set_selectable(false)` makes the pane unfocusable (same pattern as the built-in tab-bar). On zellij 0.44 it must not be called during initial startup when the pane lives in a `default_tab_template`, so the plugin defers it to the first event. The percentage layout keeps the pane flexible so Zellij's native boundary drag can resize it.
 - Rendering uses Zellij's `NestedListItem` component, including its native hierarchy bullets, selected/unselected list colors, bold text, and full-width selection surface. Badge ranges layer their semantic theme colors onto the same list items.
 - `PaneUpdate` associates terminal panes with tabs and supplies pane titles, focus, layers, and geometry. The plugin flattens tabs and multi-pane children into the same row model used by rendering, scrolling, and mouse input.
+- `TabUpdate` supplies Zellij's persistent native bell state. The plugin displays that attention at tab scope and leaves exact Codex lifecycle ownership on the appropriate compact tab or pane child row.
 - The `vertical-tab-agent-status` Zellij pipe carries versioned lifecycle messages from the user-level Codex hook. The plugin keeps only the newest session record per terminal pane and places it on the compact tab row or exact pane child as appropriate.
 
 ## License

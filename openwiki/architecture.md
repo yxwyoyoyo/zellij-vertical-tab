@@ -8,7 +8,7 @@ tags: [architecture, zellij, rust, wasm, codex, panes]
 
 # Plugin architecture and domain model
 
-The plugin is one Rust binary compiled to `wasm32-wasip1`. Zellij owns tabs, panes, focus, dimensions, theme resolution, and application mutations; the plugin retains presentation state, builds a deterministic hierarchy, and maps visible rows back to Zellij targets. The [quickstart](quickstart.md) gives product and source orientation, while [development and operations](development.md) turns these constraints into repeatable workflows.
+The plugin is one Rust binary compiled to `wasm32-wasip1`. Zellij owns tabs, panes, focus, dimensions, theme resolution, native bell state, and application mutations; the plugin retains presentation state, builds a deterministic hierarchy, and maps visible rows back to Zellij targets. The [quickstart](quickstart.md) gives product and source orientation, while [development and operations](development.md) turns these constraints into repeatable workflows.
 
 ## Runtime boundary and lifecycle
 
@@ -16,6 +16,7 @@ The plugin is one Rust binary compiled to `wasm32-wasip1`. Zellij owns tabs, pan
 TabUpdate ───────────────> tabs / active tab
 PaneUpdate ──────────────> pane ownership + ordered terminal metadata + peers
 Codex hooks ──Zellij pipe> pane-keyed AgentRecord ──peer messages──> sidebar instances
+Codex TUI ──BEL> Zellij visual bell ──TabInfo.has_bell_notification──> tab attention icon
                                       │
                                       v
                          flattened Vec<SidebarRow>
@@ -24,6 +25,8 @@ Codex hooks ──Zellij pipe> pane-keyed AgentRecord ──peer messages──>
 ```
 
 `load()` records this sidebar's plugin ID; requests `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, and `MessageAndLaunchOtherPlugins`; and subscribes to `TabUpdate`, `PaneUpdate`, and `Mouse`. The first `update()` calls `set_selectable(false)` once. `render()` converts the visible hierarchy into `NestedListItem` values and emits one native list with `print_nested_list_with_coordinates`; `pipe()` validates external Codex updates and handles instance-to-instance synchronization (`src/main.rs`).
+
+`TabUpdate` also carries Zellij's persistent bell state. The row model places `` on the owning tab while `PaneUpdate` and the status pipe retain exact per-pane lifecycle ownership. This deliberate split avoids guessing which pane emitted a bell because Zellij exposes retained bell state only on `TabInfo`.
 
 The explicit `[[bin]]` target in `Cargo.toml` is required because Zellij loads a command-style WASM module with `_start`; `register_plugin!(State)` supplies its entrypoint. A non-WASM `host_run_plugin_command` stub keeps pure host-target tests linkable.
 
@@ -81,7 +84,7 @@ The [Codex bridge workflow](development.md#codex-bridge-installation) publishes 
 - **Multiple terminal panes:** the parent tab has no status; each child independently displays only its own pane's state.
 - **No terminal or tracked pane:** no badge is rendered.
 
-There is no dominant-state precedence and no pane-count suffix in the current design. This preserves exact ownership when two Codex sessions in one tab are in different states.
+There is no dominant-state precedence and no pane-count suffix in the current design. This preserves exact ownership when two Codex sessions in one tab are in different states. Native attention is separately tab-scoped: a one-pane compact row can show `status bell`, while a multi-pane parent shows the bell and its children retain their own status icons.
 
 ### Sidebar instance convergence
 
@@ -91,13 +94,13 @@ There is no dominant-state precedence and no pane-count suffix in the current de
 
 ### Native nested-list presentation
 
-Every visible `SidebarRow::Tab` becomes a level-zero native list item and every `SidebarRow::Pane` becomes a level-one item. Zellij supplies the `>` and `-` bulletins, indentation, bold labels, complete-row padding, and `list_selected`/`list_unselected` theme palettes. The `>` is the sole persistent leading marker for a tab, so the label does not repeat its one-based position. The active tab and focused visible pane child set the item's selected flag. Semantic badge ranges are applied to the native item before selection, so idle, working, waiting, and done colors remain theme-derived on both selected and unselected rows.
+Every visible `SidebarRow::Tab` becomes a level-zero native list item and every `SidebarRow::Pane` becomes a level-one item. Zellij supplies the `>` and `-` bulletins, indentation, bold labels, complete-row padding, and `list_selected`/`list_unselected` theme palettes. The `>` is the sole persistent leading marker for a tab, so the label does not repeat its one-based position. The active tab and focused visible pane child set the item's selected flag. Semantic badge ranges are applied to the native item before selection, so idle, working, waiting, done, and native-attention colors remain theme-derived on both selected and unselected rows.
 
 ### Width-fitted rows and right inset
 
 The native renderer consumes three cells before level-zero content and five before level-one content. Inside the remaining budget, both tab and pane content reserve one leading cell for an optional overflow marker; native child indentation deliberately places pane titles deeper than tab names. The formatters use `unicode-width` cell measurements, never split a character, and append `…` when the name budget is exceeded.
 
-Native list items are rendered to the exact `cols` width so selected background styling spans the line. `ROW_RIGHT_PADDING = 1` reserves one trailing content cell whenever the required prefix or badge can still fit. Badge rows reserve the complete right-aligned glyph first, keep its state color range off the trailing cell, and truncate only the title. Extremely narrow rows degrade by preserving the protected prefix or badge rather than overflowing.
+Native list items are rendered to the exact `cols` width so selected background styling spans the line. `ROW_RIGHT_PADDING = 1` reserves one trailing content cell whenever the required prefix or suffix can still fit. Badge rows reserve the complete right-aligned status and attention suffix first, keep semantic color ranges off the separator and trailing cell, and truncate only the title. Extremely narrow rows prioritize native attention rather than clipping the suffix.
 
 ### Viewport and overflow
 

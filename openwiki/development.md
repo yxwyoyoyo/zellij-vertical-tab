@@ -68,9 +68,16 @@ If `~/.codex/hooks.json` exists, merge the entries rather than overwriting it. C
 
 ```toml
 notify = ["/usr/bin/python3", "/Users/you/.codex/hooks/agent_notify.py"]
+
+[tui]
+notifications = ["agent-turn-complete", "approval-requested"]
+notification_method = "bel"
+notification_condition = "always"
 ```
 
 To preserve an existing notifier, place its command and fixed arguments between `--forward` and the final `--`, as shown in `README.md`. The lifecycle bridge maps `SessionStart` to idle, `UserPromptSubmit`/`PreToolUse` to working, `PermissionRequest` to waiting, and `Stop` to done. The notification bridge covers `agent-turn-complete`; the detached watcher emits clear when the Codex process exits. Both bridges are best-effort and return success when outside Zellij or when publication fails.
+
+The `[tui]` settings use a separate native path. A newly started Codex TUI emits BEL for completed turns and approval requests. Use `always` because switching Zellij panes or tabs does not reliably satisfy Codex's terminal-level `unfocused` condition. Zellij flashes an active tab or retains `has_bell_notification` for an inactive tab, and the sidebar shows `` on that retained tab until acknowledgement. Existing Codex processes do not reread this configuration. Bell persistence is tab-scoped in Zellij's plugin API; pane children continue to show their exact lifecycle badges.
 
 ## Testing strategy
 

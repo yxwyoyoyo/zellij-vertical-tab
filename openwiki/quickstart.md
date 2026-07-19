@@ -1,7 +1,7 @@
 ---
 type: Repository Guide
 title: zellij-vertical-tab Quickstart
-description: Entry point for the pane-aware zellij-vertical-tab Rust/WASM plugin, including its native nested-list tab and pane hierarchy, per-pane Codex status, mouse-resizable layout, source map, and maintainer workflows.
+description: Entry point for the pane-aware zellij-vertical-tab Rust/WASM plugin, including its native nested-list hierarchy, per-pane Codex status, native bell attention, mouse-resizable layout, source map, and maintainer workflows.
 resource: README.md
 tags: [zellij, rust, wasm, codex, quickstart]
 ---
@@ -18,7 +18,7 @@ The [architecture guide](architecture.md) explains the flattened row model, pane
 
 - Zellij **0.44.3** and matching `zellij-tile = 0.44.3`.
 - [`mise`](development.md#bootstrap-and-task-entrypoints), which pins Rust **1.97.1** and Node **26.5.0** and installs the `wasm32-wasip1` target plus repository CLIs (`mise.toml`, `DEVELOPMENT.md`).
-- A Nerd Font for the four Codex status glyphs.
+- A Nerd Font for the four Codex status glyphs and the native-attention bell.
 
 ```sh
 mise trust
@@ -34,10 +34,11 @@ The development layout loads `target/wasm32-wasip1/debug/zellij_vertical_tab.was
 
 - **Adaptive native hierarchy:** every tab contributes a top-level `>` list item, used as the sole leading marker without repeating the tab number. More than one terminal pane adds one indented `-` child item per terminal pane; zero or one does not. Children are ordered tiled, floating, then suppressed, with each layer ordered by `y`, `x`, and pane ID.
 - **Status ownership:** status is keyed by terminal pane ID. A one-pane tab shows its pane's glyph on the compact tab row. A multi-pane tab shows each glyph only on its owning pane child; the parent has no aggregate glyph or pane count.
+- **Native attention:** Codex completion and approval events emit BEL. Zellij retains attention for inactive tabs, so `` appears on that tab's row until acknowledgement while pane lifecycle status remains exact.
 - **Selection:** the active tab and the focused child of the active multi-pane tab use Zellij's native selected-list palette across the fitted row; all other rows use the native unselected-list palette.
 - **Exact clicks:** a valid tab-row click calls `switch_tab_to(position + 1)`; a pane-row click calls `focus_terminal_pane(id, false, false)`, allowing Zellij to switch tab/layer and focus that exact terminal pane. Clicks outside rendered rows do nothing.
 - **Shared viewport:** rendering, wheel scrolling, overflow markers, and click mapping consume one flattened row vector. Wheel input moves one hierarchy row; keyboard tab changes minimally move the window to reveal the active tab.
-- **Cell-aware rows:** after reserving three cells of native top-level chrome or five cells of child chrome, tab names and pane titles are measured in terminal cells and receive `…` when truncated. Every row fills the available width for selection styling and, whenever its required prefix or badge still fits, reserves a **one-cell right inset**. A status glyph is right-aligned before that uncolored cell.
+- **Cell-aware rows:** after reserving three cells of native top-level chrome or five cells of child chrome, tab names and pane titles are measured in terminal cells and receive `…` when truncated. Every row fills the available width for selection styling and, whenever its required prefix or suffix still fits, reserves a **one-cell right inset**. Status and attention glyphs are right-aligned before that uncolored cell.
 
 The hierarchy, native presentation, interaction, and status rules are canonicalized in `openspec/specs/vertical-tab-sidebar/spec.md` and `openspec/specs/agent-status/spec.md`; the accepted presentation rationale is archived under `openspec/changes/archive/2026-07-19-refresh-zellij-native-sidebar-ui/` and implemented in `src/main.rs`.
 
