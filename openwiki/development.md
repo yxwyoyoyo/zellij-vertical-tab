@@ -91,6 +91,7 @@ Run `mise run test`; its Rust tests are colocated in `src/main.rs` and currently
 - focused tiled/floating child selection and empty-title fallback;
 - exact tab versus pane row targets;
 - payload validation, timestamps, pane reuse, clear tombstones, cleanup, peer discovery, and snapshots;
+- exact-record focus-edge acknowledgement, cached-focus race prevention, cross-instance focus observations, attached-client versus plugin-local tab focus, newer-status invalidation, acknowledgement-before-status ordering, and snapshot recovery;
 - cell-aware truncation, wide characters, ellipsis, index-free labels and overflow leads, native chrome budgets and hierarchy levels, badge preservation, one-cell inset, and theme styling.
 
 Keep runtime host calls out of these tests unless a proper mock layer is introduced; the non-WASM import stub exists only to link pure tests.
@@ -123,10 +124,11 @@ Unset the Zellij variables so the process does not think it is nested. The input
 3. one-pane tabs stay compact, while a multi-pane tab lists all terminal panes and excludes plugin panes;
 4. tab and child rows use native `>`/`-` list bulletins, the active tab and focused visible-layer child use complete-row selected-list styling, and children follow tiled/floating/suppressed visual order;
 5. one-pane status appears on the tab, multi-pane statuses remain on exact children, and no aggregate/count appears; on selected and unselected rows, verify idle remains dim, working cyan, waiting orange, and done green under the active theme;
-6. a new tab's sidebar obtains current statuses from an existing peer;
-7. a tab-row click switches tabs, while a pane-row click focuses that exact pane, including after scrolling;
-8. at narrow and wide sidebar widths, long ASCII/wide names ellipsize after native list chrome, badges remain intact, and every normal-width row keeps its rightmost cell blank;
-9. wheel overflow and keyboard tab switching operate on the same flattened hierarchy, with `▲`/`▼` marking hidden rows.
+6. leaving and returning to a done pane changes only its visible lifecycle badge to idle across every sidebar instance; completion without a later focus transition remains done, while working and waiting remain unchanged and Zellij's native bell clears independently;
+7. a new tab's sidebar obtains current statuses and acknowledgement references from an existing peer;
+8. a tab-row click switches tabs, while a pane-row click focuses that exact pane, including after scrolling;
+9. at narrow and wide sidebar widths, long ASCII/wide names ellipsize after native list chrome, badges remain intact, and every normal-width row keeps its rightmost cell blank;
+10. wheel overflow and keyboard tab switching operate on the same flattened hierarchy, with `▲`/`▼` marking hidden rows.
 
 ## Runbook
 

@@ -38,6 +38,7 @@ The explicit `[[bin]]` target in `Cargo.toml` is required because Zellij loads a
 | `pane_tabs` | Stable terminal pane ID to tab-position ownership, used for lifecycle cleanup |
 | `terminal_panes` | Terminal display metadata grouped by tab: title, focus, layer, and geometry |
 | `agent_records` | Newest `AgentRecord` per terminal pane ID, including non-rendered `clear` tombstones |
+| `agent_acknowledgements`, `focused_terminal_panes` | Exact completed records acknowledged by focus and the last complete client-viewed focus observation |
 | `plugin_id`, `peer_plugin_ids` | Identity of this sidebar and same-URL sidebar instances in other tabs |
 | `scroll_offset`, `rows` | First flattened hierarchy row and last rendered viewport height |
 | `unselectable_set` | One-time guard for deferred selectability |
@@ -78,6 +79,8 @@ The [Codex bridge workflow](development.md#codex-bridge-installation) publishes 
 - a retained `clear` tombstone prevents delayed messages from resurrecting state;
 - `PaneUpdate` removes records for terminal panes that no longer exist.
 
+Focus acknowledgement is presentation state rather than a lifecycle event. After tab or pane updates, the plugin uses `TabInfo.other_focused_clients` to find tabs actually viewed by attached clients, falling back to `active` only when no client-focus metadata exists. This avoids treating every sidebar instance's locally active containing tab as user-visible. The first complete observation establishes a focus baseline; later observations acknowledge a current `done` record only when its pane newly enters the viewed-focus set. Since an inactive per-tab instance can miss the update that records leaving its tab, changed focus observations are sent to peer instances and applied without forwarding. Status and snapshot ingestion never acknowledges against cached focus, preventing a completion pipe from racing a delayed tab-switch update and clearing an unseen result. Rendering resolves only an exact acknowledged session and timestamp to visible `idle`; working, waiting, clear, different-session, and different-timestamp records retain their lifecycle presentation. Pane cleanup removes acknowledgement references alongside records.
+
 ### Row placement replaces aggregation
 
 - **Exactly one terminal pane:** its renderable state appears on the compact tab row.
@@ -88,7 +91,7 @@ There is no dominant-state precedence and no pane-count suffix in the current de
 
 ### Sidebar instance convergence
 
-`default_tab_template` creates a separate plugin instance in every tab, so one instance receiving a CLI pipe is not enough. On `PaneUpdate`, an instance discovers plugin panes with the same plugin URL. A newly discovered peer receives a sync request; the peer returns a serialized snapshot; timestamp validation merges only current records. Normal external updates are forwarded once as sync updates, and recipients do not forward them again. This gives each sidebar the same session-wide, pane-keyed view without a central process.
+`default_tab_template` creates a separate plugin instance in every tab, so one instance receiving a CLI pipe or focus event is not enough. On `PaneUpdate`, an instance discovers plugin panes with the same plugin URL. A newly discovered peer receives a sync request and the sender's current focus baseline; the peer returns a serialized snapshot containing lifecycle records and acknowledgement references; timestamp validation merges only current state. Normal external updates are forwarded once as sync updates. Changed focus observations are sent once to peers, which update their baseline without forwarding. A newly created focus acknowledgement uses its own validated pane/session/timestamp message; recipients apply it without forwarding, so there is no loop. An acknowledgement may arrive before its matching status and becomes visible only after that exact `done` record arrives.
 
 ## Rendering and interaction rules
 
