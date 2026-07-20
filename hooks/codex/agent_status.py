@@ -8,27 +8,43 @@ errors must never block or otherwise change an agent turn.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import sys
+import tempfile
 import time
-from typing import Any
+from typing import Any, BinaryIO
 
 try:
     from status_store import apply_payload as persist_payload
-    from status_store import find_zellij_ancestor
+    from status_store import journal_root
     from status_store import parse_positive_pid
+    from status_store import process_is_running
+    from status_store import prune_dead_server_directories
+    from status_store import server_directory
     from status_store import snapshot_json
 except ImportError:
     def persist_payload(_payload: object, _zellij_pid: int) -> bool:
         return False
 
-    def find_zellij_ancestor(_start_pid: int | None = None) -> int | None:
+    def parse_positive_pid(_value: object) -> int | None:
         return None
 
-    def parse_positive_pid(_value: object) -> int | None:
+    def process_is_running(_pid: int) -> bool:
+        return False
+
+    def prune_dead_server_directories(_current_zellij_pid: int) -> int:
+        return 0
+
+    def journal_root() -> Path:
+        return Path(tempfile.gettempdir()) / "zellij-vertical-tab"
+
+    def server_directory(_zellij_pid: int) -> Path | None:
         return None
 
     def snapshot_json(_zellij_pid: int) -> str | None:
@@ -54,6 +70,9 @@ EVENT_NAMES = {
     "Stop": "stop",
 }
 TRANSCRIPT_TAIL_MAX_BYTES = 8 * 1024 * 1024
+PROCESS_ANCESTOR_LIMIT = 16
+WATCHER_POLL_INTERVAL_SECONDS = 2.0
+WATCHER_DIRECTORY = "watchers"
 
 
 def approvals_reviewer_for_turn(
@@ -71,7 +90,6 @@ def approvals_reviewer_for_turn(
             transcript.seek(start)
             if start:
                 transcript.readline()
-            reviewer = None
             for raw_line in transcript:
                 try:
                     record = json.loads(raw_line)
@@ -84,8 +102,8 @@ def approvals_reviewer_for_turn(
                     continue
                 candidate = payload.get("approvals_reviewer")
                 if isinstance(candidate, str):
-                    reviewer = candidate
-            return reviewer
+                    return candidate
+            return None
     except OSError:
         return None
 
@@ -165,45 +183,180 @@ def process_info(pid: int) -> tuple[int, str] | None:
         return None
 
 
-def find_codex_ancestor(start_pid: int | None = None) -> int | None:
+def find_process_ancestors(start_pid: int | None = None) -> tuple[int | None, int | None]:
     pid = os.getppid() if start_pid is None else start_pid
-    for _ in range(12):
+    codex_pid = None
+    zellij_pid = None
+    for _ in range(PROCESS_ANCESTOR_LIMIT):
         info = process_info(pid)
         if info is None:
-            return None
+            break
         parent_pid, command = info
-        if Path(command).name.lower() in {"codex", "codex.exe"}:
-            return pid
+        command_name = Path(command).name.lower()
+        if codex_pid is None and command_name in {"codex", "codex.exe"}:
+            codex_pid = pid
+        if command_name in {"zellij", "zellij.exe"}:
+            zellij_pid = pid
+            break
         if parent_pid <= 1 or parent_pid == pid:
-            return None
+            break
         pid = parent_pid
-    return None
+    return zellij_pid, codex_pid
 
 
-def process_is_running(pid: int) -> bool:
+def find_codex_ancestor(start_pid: int | None = None) -> int | None:
+    return find_process_ancestors(start_pid)[1]
+
+
+def watcher_directory(zellij_pid: int | None) -> Path:
+    directory = server_directory(zellij_pid) if zellij_pid is not None else None
+    if directory is None:
+        directory = journal_root() / WATCHER_DIRECTORY / "unscoped"
+    else:
+        directory = directory / WATCHER_DIRECTORY
+    return directory
+
+
+def watcher_paths(zellij_pid: int | None, codex_pid: int) -> tuple[Path, Path]:
+    directory = watcher_directory(zellij_pid)
+    return directory / f"codex-{codex_pid}.lock", directory / f"codex-{codex_pid}.json"
+
+
+def write_watcher_metadata(
+    codex_pid: int,
+    pane_id: str,
+    session_id: str,
+    zellij_pid: int | None,
+) -> bool:
+    lock_path, metadata_path = watcher_paths(zellij_pid, codex_pid)
+    directory = lock_path.parent
+    temporary_path: Path | None = None
     try:
-        os.kill(pid, 0)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=directory,
+            prefix=f".codex-{codex_pid}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            os.fchmod(temporary.fileno(), 0o600)
+            json.dump(
+                {
+                    "pane_id": pane_id,
+                    "session_id": session_id,
+                    "zellij_pid": zellij_pid,
+                },
+                temporary,
+                separators=(",", ":"),
+            )
+            temporary.write("\n")
+        os.replace(temporary_path, metadata_path)
         return True
-    except PermissionError:
-        return True
-    except ProcessLookupError:
+    except OSError:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         return False
+
+
+def read_watcher_metadata(
+    codex_pid: int, zellij_pid: int | None
+) -> tuple[str, str, int | None] | None:
+    _, metadata_path = watcher_paths(zellij_pid, codex_pid)
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    pane_id = metadata.get("pane_id")
+    session_id = metadata.get("session_id")
+    metadata_zellij_pid = metadata.get("zellij_pid")
+    if (
+        not isinstance(pane_id, str)
+        or not pane_id.strip()
+        or not isinstance(session_id, str)
+        or not session_id.strip()
+        or (metadata_zellij_pid is not None and parse_positive_pid(metadata_zellij_pid) is None)
+    ):
+        return None
+    return pane_id, session_id, parse_positive_pid(metadata_zellij_pid)
+
+
+def acquire_watcher_lock(
+    codex_pid: int, zellij_pid: int | None
+) -> tuple[BinaryIO | None, bool]:
+    lock_path, _ = watcher_paths(zellij_pid, codex_pid)
+    try:
+        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_file = lock_path.open("a+b")
+        os.chmod(lock_path, 0o600)
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_file.close()
+            return None, False
+        return lock_file, True
+    except OSError:
+        return None, False
+
+
+def wait_for_process_exit(pid: int) -> None:
+    if not process_is_running(pid):
+        return
+    kqueue_factory = getattr(select, "kqueue", None)
+    if kqueue_factory is not None:
+        queue = None
+        try:
+            queue = kqueue_factory()
+            event = select.kevent(
+                pid,
+                filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_ONESHOT,
+                fflags=select.KQ_NOTE_EXIT,
+            )
+            queue.control([event], 1, None)
+            return
+        except OSError as error:
+            if error.errno in {errno.ESRCH, errno.ENOENT}:
+                return
+        finally:
+            if queue is not None:
+                queue.close()
+    while process_is_running(pid):
+        time.sleep(WATCHER_POLL_INTERVAL_SECONDS)
 
 
 def watch_process(
     pid: int, pane_id: str, session_id: str, zellij_pid: int | None = None
 ) -> None:
-    while process_is_running(pid):
-        time.sleep(0.5)
-    payload = build_clear_payload(pane_id, session_id)
-    if zellij_pid is not None:
-        persist_payload(payload, zellij_pid)
-    publish_payload(payload)
+    lock_file, should_watch = acquire_watcher_lock(pid, zellij_pid)
+    if not should_watch:
+        return
+    try:
+        wait_for_process_exit(pid)
+        metadata = read_watcher_metadata(pid, zellij_pid)
+        if metadata is not None:
+            pane_id, session_id, zellij_pid = metadata
+        payload = build_clear_payload(pane_id, session_id)
+        if zellij_pid is not None:
+            persist_payload(payload, zellij_pid)
+        publish_payload(payload)
+    finally:
+        if lock_file is not None:
+            lock_file.close()
 
 
 def start_exit_watcher(
     pid: int, pane_id: str, session_id: str, zellij_pid: int | None = None
 ) -> None:
+    write_watcher_metadata(pid, pane_id, session_id, zellij_pid)
     arguments = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -259,12 +412,13 @@ def main() -> int:
     payload = build_payload(hook_input, pane_id)
     if payload is None:
         return 0
-    zellij_pid = find_zellij_ancestor()
+    zellij_pid, codex_pid = find_process_ancestors()
+    if hook_input.get("hook_event_name") == "SessionStart" and zellij_pid is not None:
+        prune_dead_server_directories(zellij_pid)
     if zellij_pid is not None:
         persist_payload(payload, zellij_pid)
     publish_payload(payload)
     if hook_input.get("hook_event_name") == "SessionStart":
-        codex_pid = find_codex_ancestor()
         if codex_pid is not None:
             start_exit_watcher(codex_pid, pane_id, payload["session_id"], zellij_pid)
     return 0

@@ -115,6 +115,44 @@ hierarchy and selected surfaces, multi-pane child rows, independent statuses in
 two tabs, exact pane clicks after scrolling, wide/long titles, right-edge
 spacing, peer status synchronization, and status cleanup after Codex exits.
 
+## Agent-status performance invariants
+
+The tab template creates one sidebar instance per tab, so lifecycle work must
+remain linear as tabs grow:
+
+- the untargeted `vertical-tab-agent-status` CLI pipe is already a Zellij
+  broadcast; recipients apply it locally and must not relay it to peers;
+- the lowest live sidebar plugin ID is the synchronization leader: a nonleader
+  reports a newly observed focus transition only to that leader, and only the
+  leader fans focus acknowledgements out, with deterministic turnover when it
+  closes;
+- late-joining sidebars recover through bounded peer snapshots rather than
+  replaying every lifecycle update;
+- repeated Codex `SessionStart` events refresh one PID-scoped watcher record;
+  a non-blocking advisory lock allows only one long-lived watcher, and macOS
+  uses `kqueue` process-exit notification instead of periodic polling;
+- plugin snapshots live under a Zellij-server cache shard. Flat snapshots are
+  read only for one-time migration, while dead host-journal directories are
+  pruned only after their PID is demonstrably absent.
+
+When changing these paths, test several tabs and repeated session-start events.
+One external status should produce one local application per existing sidebar,
+not an all-to-all relay, and repeated starts for one Codex PID should leave one
+watcher process.
+
+Reference measurements from the July 2026 macOS test host:
+
+| Path | Observed bound |
+| --- | --- |
+| Two watcher starts for one Codex PID | One resident watcher (about 25 MiB RSS), then zero after process exit |
+| Ordinary Python hook, 20 sequential invocations | About 1.18 seconds total, or 59 ms per invocation |
+| One lifecycle update with `N` sidebars | `N` Zellij deliveries; no plugin relay |
+| One focus transition with `N` sidebars | At most `2(N - 1)` peer messages: reports to the leader plus one leader fanout |
+
+The Python interpreter remains the main per-session watcher memory cost. The
+current change bounds that cost to one watcher per Codex process; replacing the
+bridge with a smaller native helper remains a separate optimization.
+
 ## Release and install
 
 Build a release only after the complete local gate:
