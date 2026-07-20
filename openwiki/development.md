@@ -1,7 +1,7 @@
 ---
 type: Engineering Runbook
 title: Development, Testing, and Operations
-description: Mise-managed runbook for building, testing, releasing, installing, hot-reloading, recovering, and verifying the pane-aware zellij-vertical-tab plugin and its Codex status bridges.
+description: Mise-managed runbook for building, testing, releasing, installing, hot-reloading, recovering, and verifying the pane-aware zellij-vertical-tab plugin, including bounded Codex watcher, messaging, and cache performance.
 resource: AGENTS.md
 tags: [development, testing, operations, mise, zellij, codex]
 ---
@@ -31,7 +31,7 @@ mise run dev   # build, then launch zellij.kdl
 mise run check # complete pre-PR gate
 ```
 
-The host Rust tests exercise pure status, recovery, pane hierarchy, native list-row mapping, row target, viewport, cell-width, inset, and styling helpers. The Python tests exercise lifecycle mapping, durable journal behavior, process-exit cleanup, completion notification parsing, and notifier forwarding. The debug artifact is `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm`.
+The host Rust tests exercise pure status, recovery, pane hierarchy, native list-row mapping, row target, viewport, cell-width, inset, and styling helpers. The Python tests exercise lifecycle mapping, durable journal behavior, deduplicated process-exit cleanup, completion notification parsing, and notifier forwarding. The debug artifact is `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm`.
 
 ### Development launch, reload, and status recovery
 
@@ -45,7 +45,7 @@ ZELLIJ_DEV_SESSION=Hub mise run reload
 
 The helper resolves the artifact to an absolute path, verifies it exists, and calls `start-or-reload-plugin`. It targets the explicit argument, then `ZELLIJ_DEV_SESSION`, then the current `ZELLIJ_SESSION_NAME`; outside Zellij it fails rather than guessing a session. `mise run deploy -- Hub` applies the same targeting rules to the installed release artifact after the release gate and installation.
 
-Reloading replaces the plugin instance, but the replacement restores pane-keyed lifecycle records and exact focus acknowledgements from its server-scoped `/cache` snapshots. It then requests one host-journal snapshot through the fixed global bridge helper so events emitted while no plugin runtime was available are reconciled by timestamp. If recovery is unavailable and the current pane, Codex session ID, and state are known, republish that exact state through the normal `vertical-tab-agent-status` protocol:
+Reloading replaces the plugin instance, but the replacement restores pane-keyed lifecycle records and exact focus acknowledgements from `/cache/agent-status-<zellij-pid>/`; the first updated instance can migrate compatible legacy flat snapshots into that server shard. It then requests one host-journal snapshot through the fixed global bridge helper so events emitted while no plugin runtime was available are reconciled by timestamp. If recovery is unavailable and the current pane, Codex session ID, and state are known, republish that exact state through the normal `vertical-tab-agent-status` protocol:
 
 ```sh
 mise run status -- terminal_0 <codex-session-id> done Hub
@@ -76,9 +76,23 @@ notification_method = "bel"
 notification_condition = "always"
 ```
 
-To preserve an existing notifier, place its command and fixed arguments between `--forward` and the final `--`, as shown in `README.md`. The lifecycle bridge maps `SessionStart` to idle, `UserPromptSubmit`/`PreToolUse`/`PostToolUse` to working, manually reviewed `PermissionRequest` to waiting, and `Stop` to done. On a permission event, the bridge best-effort reads the matching turn context from the bounded tail of Codex's transcript; an `auto_review` reviewer keeps the pane working, while missing or unreadable context falls back to waiting. `PostToolUse` remains the observable return-to-agent boundary after manual approval. The notification bridge covers `agent-turn-complete`; the detached watcher emits clear when the Codex process exits. Each valid event is written first to a per-server, per-pane journal by `status_store.py`, then published to the normal pipe. Optional normalized event and turn identity keep done terminal within one turn while allowing the next `UserPromptSubmit` to resume working; legacy version-1 records remain valid. The bridge can also return one bounded version-1 server snapshot for plugin recovery. All persistence and publication are best-effort and return success when outside Zellij or when unavailable.
+To preserve an existing notifier, place its command and fixed arguments between `--forward` and the final `--`, as shown in `README.md`. The lifecycle bridge maps `SessionStart` to idle, `UserPromptSubmit`/`PreToolUse`/`PostToolUse` to working, manually reviewed `PermissionRequest` to waiting, and `Stop` to done. On a permission event, the bridge best-effort reads the matching turn context from the bounded tail of Codex's transcript; an `auto_review` reviewer keeps the pane working, while missing or unreadable context falls back to waiting. `PostToolUse` remains the observable return-to-agent boundary after manual approval. The notification bridge covers `agent-turn-complete`; one PID-scoped detached watcher emits clear when the Codex process exits; repeated `SessionStart` events refresh its metadata rather than retaining duplicate watchers. On macOS it waits through `kqueue`, while unsupported platforms use a two-second polling fallback. Each valid event is written first to a per-server, per-pane journal by `status_store.py`, then published to the normal pipe. Optional normalized event and turn identity keep done terminal within one turn while allowing the next `UserPromptSubmit` to resume working; legacy version-1 records remain valid. The bridge can also return one bounded version-1 server snapshot for plugin recovery. All persistence and publication are best-effort and return success when outside Zellij or when unavailable.
 
 The `[tui]` settings use a separate native path. A newly started Codex TUI emits BEL for completed turns and approval requests. Use `always` because switching Zellij panes or tabs does not reliably satisfy Codex's terminal-level `unfocused` condition. Zellij flashes an active tab or retains `has_bell_notification` for an inactive tab, and the sidebar shows `` on that retained tab until acknowledgement. Existing Codex processes do not reread this configuration. Bell persistence is tab-scoped in Zellij's plugin API; pane children continue to show their exact lifecycle badges.
+
+## Agent-status performance invariants
+
+The [status synchronization and recovery architecture](architecture.md#sidebar-instance-convergence) must stay linear as the tab template adds sidebar instances:
+
+- Zellij's untargeted lifecycle pipe supplies exactly one delivery per listening sidebar; recipients apply it locally and do not relay it.
+- The lowest live plugin ID leads focus synchronization. Nonleaders report once to it, and it performs the only peer fanout, bounding one focus transition to at most `2(N - 1)` peer messages for `N` sidebars.
+- Late joiners recover from bounded peer snapshots rather than replaying lifecycle history.
+- Repeated `SessionStart` events for one Codex PID may refresh watcher metadata but must leave at most one resident watcher; macOS should use event-driven `kqueue`, with two-second polling only as a fallback.
+- Normal plugin restore scans only `/cache/agent-status-<zellij-pid>/`; legacy flat files are a one-time migration source. Session start removes only host-journal directories whose numeric PID is demonstrably dead.
+
+When changing these paths, test several tabs and repeated starts for one Codex process. One external status should be applied once in every existing sidebar with no plugin relay, repeated starts should leave one watcher, and closing the lowest-ID sidebar should deterministically transfer leadership. July 2026 macOS reference measurements observed one roughly 25 MiB watcher after two starts, zero after process exit, and 20 ordinary hook invocations in about 1.18 seconds (59 ms each). These values characterize the current Python cost; they are not portable regression thresholds. Replacing the bridge with a smaller native helper remains out of scope (`DEVELOPMENT.md`, `openspec/changes/archive/2026-07-20-optimize-status-performance/`).
+
+Deploy the hooks and WASM together: watcher/journal ownership lives in Python while broadcast handling and cache migration live in the plugin. The completed implementation checklist and archive-before-merge evidence are recorded under `openspec/changes/archive/2026-07-20-optimize-status-performance/`.
 
 ## Testing strategy
 
@@ -91,15 +105,15 @@ Run `mise run test`; its Rust tests are colocated in `src/main.rs` and currently
 - compact zero/one-pane tabs and expanded multi-pane children;
 - focused tiled/floating child selection and empty-title fallback;
 - exact tab versus pane row targets;
-- payload validation, timestamps, pane reuse, clear tombstones, approval recovery, turn-terminal completion, cleanup, peer discovery, snapshots, server-scoped cache recovery, corrupt/oversized cache filtering, and stale-recovery rejection;
-- exact-record focus-edge acknowledgement, cached-focus race prevention, cross-instance focus observations, attached-client versus plugin-local tab focus, newer-status invalidation, acknowledgement-before-status ordering, and snapshot recovery;
+- payload validation, timestamps, pane reuse, clear tombstones, approval recovery, turn-terminal completion, cleanup, peer discovery, snapshots, server-sharded cache recovery and legacy migration, corrupt/oversized cache filtering, and stale-recovery rejection;
+- exact-record focus-edge acknowledgement, cached-focus race prevention, leader election and turnover, cross-instance focus observations, attached-client versus plugin-local tab focus, newer-status invalidation, acknowledgement-before-status ordering, and snapshot recovery;
 - cell-aware truncation, wide characters, ellipsis, index-free labels and overflow leads, native chrome budgets and hierarchy levels, badge preservation, one-cell inset, and theme styling.
 
 Keep runtime host calls out of these tests unless a proper mock layer is introduced; the non-WASM import stub exists only to link pure tests.
 
 ### Python bridge tests
 
-`mise run test` also runs `python3 -m unittest discover -s hooks/codex -p 'test_*.py'`. Its coverage includes lifecycle mapping, post-approval recovery, turn-aware terminal completion, notification payload fields, forwarding syntax, process cleanup, journal ordering/locking, matching-session clear, malformed record filtering, and snapshot isolation.
+`mise run test` also runs `python3 -m unittest discover -s hooks/codex -p 'test_*.py'`. Its coverage includes lifecycle mapping, post-approval recovery, turn-aware terminal completion, combined Codex/Zellij ancestry discovery, watcher metadata refresh and lock deduplication, `kqueue` versus polling waits, safe dead-server pruning, notification payload fields, forwarding syntax, journal ordering/locking, matching-session clear, malformed record filtering, and snapshot isolation.
 
 ### WASM and specification checks
 
@@ -132,7 +146,9 @@ Unset the Zellij variables so the process does not think it is nested. The input
 10. wheel overflow and keyboard tab switching operate on the same flattened hierarchy, with `▲`/`▼` marking hidden rows.
 11. after recording done and its focus acknowledgement, detach and reattach the same live Zellij server; the restored visible state remains idle rather than reverting to done or disappearing;
 12. while detached, emit working, waiting, done, and a matching-session clear through the installed bridge, then reattach and verify the newest journal event wins; repeat with another Zellij server using the same pane number and verify no state leaks across servers.
-13. trigger a request that automatic review approves; verify its permission event remains working, a manually reviewed request displays waiting, and a delayed same-turn tool event cannot replace done.
+13. trigger a request that automatic review approves; verify its permission event remains working, a manually reviewed request displays waiting, and a delayed same-turn tool event cannot replace done;
+14. with several tabs, publish one lifecycle event and verify every sidebar applies it without plugin relay; change focus from a nonleader, verify bounded leader fanout, then close the lowest-ID instance and confirm turnover;
+15. trigger repeated `SessionStart` events for one Codex PID and verify one watcher remains, the latest pane/session metadata drives its exit clear, and a later start prunes only demonstrably dead server-journal shards.
 
 ## Runbook
 
@@ -141,8 +157,11 @@ Unset the Zellij variables so the process does not think it is nested. The input
 - Confirm all five plugin permissions were granted. `ReadApplicationState` gates tab/pane updates; `ReadCliPipes` gates Codex input; peer synchronization needs `MessageAndLaunchOtherPlugins`; detached-event reconciliation needs `RunCommands`. Denying `RunCommands` should affect only host-journal recovery.
 - Confirm the KDL path points to a freshly built artifact and that `zellij-tile` matches Zellij 0.44.3.
 - For a missing Codex badge, confirm the global hooks are installed/merged and the process has `ZELLIJ_PANE_ID`. A newly launched Codex TUI may not emit idle until hooks initialize on the first prompt.
-- If only a newly created tab lacks existing statuses, inspect peer discovery/snapshot handling rather than reintroducing tab-level aggregation.
-- If status is present before detach but absent after reattach or hot reload, confirm `status_store.py` is installed beside both bridge scripts, inspect `${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab/sessions/<zellij-pid>/`, and distinguish the same live server from a newly started server. Existing Codex sessions populate the journal only on their next lifecycle event.
+- If every existing tab receives duplicate lifecycle work, check that `AGENT_STATUS_PIPE` recipients apply locally without sending `AGENT_STATUS_SYNC_UPDATE`; the untargeted Zellij pipe is already the broadcast.
+- If only a newly created tab lacks existing statuses, inspect peer discovery/snapshot handling rather than reintroducing lifecycle relays or tab-level aggregation.
+- If focus acknowledgement diverges between tabs, verify the lowest live plugin ID is leader and that nonleaders report only to it; closing that instance should elect the next-lowest ID after the next pane manifest.
+- If repeated starts leave multiple resident watcher processes, confirm all global hook files were deployed together and that the process can create advisory locks under `${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab/sessions/<zellij-pid>/watchers/`. On filesystems without working locks, exit cleanup is intentionally skipped rather than multiplied.
+- If status is present before detach but absent after reattach or hot reload, confirm `status_store.py` is installed beside both bridge scripts, inspect `${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab/sessions/<zellij-pid>/`, and distinguish the same live server from a newly started server. The WASM cache now lives in `/cache/agent-status-<zellij-pid>/`; compatible flat files are considered only before that shard exists. Existing Codex sessions populate the journal only on their next lifecycle event.
 - If an automatically reviewed request shows waiting, confirm its transcript contains a matching `turn_context` with `approvals_reviewer` set to `auto_review`, the installed `agent_status.py` matches this repository, and the hook is trusted in Codex `/hooks`. Missing or unreadable reviewer context intentionally falls back to waiting.
 
 ### Wrong row or pane activates
@@ -172,7 +191,7 @@ Confirm the explicit binary target and `register_plugin!(State)` remain. A react
 ## Release and maintenance notes
 
 - Treat a Zellij upgrade as an ABI migration: update the binary, `zellij-tile`, lockfile, and runtime test environment together.
-- `mise run release` gates and builds release WASM; `mise run install` copies it to `${ZELLIJ_PLUGIN_DIR:-$HOME/.config/zellij/plugins}`, and `mise run deploy -- <session>` installs then reloads it. Startup-sensitive changes still need a new session.
+- `mise run release` gates and builds release WASM; `mise run install` copies it to `${ZELLIJ_PLUGIN_DIR:-$HOME/.config/zellij/plugins}`, and `mise run deploy -- <session>` installs then reloads it. When recovery or synchronization changes span `hooks/codex/` and `src/main.rs`, deploy the global hooks and WASM together. Startup-sensitive changes still need a new session.
 - No checked-in product CI publishes WASM; release and installation remain maintainer-run tasks.
 - Keep baseline OpenSpec files synchronized with implemented behavior, then archive completed changes with their proposal/design/task evidence. `mise run spec` performs strict validation.
 - Run `mise run docs` only after code and specifications stabilize; it invokes an OpenWiki code-mode update. `.github/workflows/openwiki-update.yml` also updates documentation daily or on demand, but does not build, test, install, or release the plugin.

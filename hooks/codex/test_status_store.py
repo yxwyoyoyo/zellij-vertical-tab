@@ -161,6 +161,23 @@ class StatusStoreTests(unittest.TestCase):
             self.assertEqual(status_store.find_zellij_ancestor(30), 20)
         self.assertEqual(info.call_args_list, [call(30), call(20)])
 
+    def test_prunes_only_demonstrably_dead_server_directories(self):
+        sessions = Path(self.temporary.name) / "sessions"
+        for name in ("100", "101", "102", "not-a-pid"):
+            directory = sessions / name
+            directory.mkdir(parents=True)
+            (directory / "marker").write_text(name)
+        with patch.object(
+            status_store,
+            "process_is_running",
+            side_effect=lambda pid: pid == 102,
+        ):
+            self.assertEqual(status_store.prune_dead_server_directories(100), 1)
+        self.assertTrue((sessions / "100").is_dir())
+        self.assertFalse((sessions / "101").exists())
+        self.assertTrue((sessions / "102").is_dir())
+        self.assertTrue((sessions / "not-a-pid").is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()

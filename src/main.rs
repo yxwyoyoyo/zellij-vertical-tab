@@ -348,20 +348,24 @@ impl State {
             &focused_panes,
             &self.agent_records,
         );
+        let should_broadcast = is_sync_leader(self.plugin_id, &self.peer_plugin_ids);
         let mut changed = false;
         for update in updates {
             let pane_id = update.pane_id;
             if apply_agent_acknowledgement(&mut self.agent_acknowledgements, update) {
                 changed = true;
-                if let Some(payload) =
-                    serialize_agent_acknowledgement(pane_id, &self.agent_acknowledgements[&pane_id])
-                {
-                    for peer_id in &self.peer_plugin_ids {
-                        send_plugin_message(
-                            *peer_id,
-                            AGENT_STATUS_SYNC_ACKNOWLEDGEMENT,
-                            payload.clone(),
-                        );
+                if should_broadcast {
+                    if let Some(payload) = serialize_agent_acknowledgement(
+                        pane_id,
+                        &self.agent_acknowledgements[&pane_id],
+                    ) {
+                        for peer_id in &self.peer_plugin_ids {
+                            send_plugin_message(
+                                *peer_id,
+                                AGENT_STATUS_SYNC_ACKNOWLEDGEMENT,
+                                payload.clone(),
+                            );
+                        }
                     }
                 }
             }
@@ -390,8 +394,8 @@ impl State {
         let payload = serialize_agent_focus(&focused_panes);
         let acknowledgement_changed = self.accept_focus_observation(focused_panes);
         if let Some(payload) = payload {
-            for peer_id in &self.peer_plugin_ids {
-                send_plugin_message(*peer_id, AGENT_STATUS_SYNC_FOCUS, payload.clone());
+            for recipient_id in focus_sync_recipients(self.plugin_id, &self.peer_plugin_ids) {
+                send_plugin_message(recipient_id, AGENT_STATUS_SYNC_FOCUS, payload.clone());
             }
         }
         acknowledgement_changed
@@ -420,12 +424,15 @@ impl ZellijPlugin for State {
         let plugin_ids = get_plugin_ids();
         self.plugin_id = Some(plugin_ids.plugin_id);
         self.zellij_pid = Some(plugin_ids.zellij_pid);
-        restore_agent_cache(
+        let restored = restore_agent_cache(
             Path::new("/cache"),
             plugin_ids.zellij_pid,
             &mut self.agent_records,
             &mut self.agent_acknowledgements,
         );
+        if restored {
+            self.persist_agent_cache();
+        }
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
@@ -592,11 +599,7 @@ impl ZellijPlugin for State {
                 let Some(update) = parse_agent_status(payload) else {
                     return false;
                 };
-                let changed = self.accept_agent_status(update);
-                for peer_id in &self.peer_plugin_ids {
-                    send_plugin_message(*peer_id, AGENT_STATUS_SYNC_UPDATE, payload.to_owned());
-                }
-                changed
+                self.accept_agent_status(update)
             }
             AGENT_STATUS_SYNC_UPDATE => {
                 parse_agent_status(payload).is_some_and(|update| self.accept_agent_status(update))
@@ -825,13 +828,25 @@ fn apply_agent_snapshot(
         })
 }
 
-fn agent_cache_path(cache_dir: &Path, zellij_pid: u32, plugin_id: u32) -> std::path::PathBuf {
-    cache_dir.join(format!(
-        "{AGENT_CACHE_PREFIX}-{zellij_pid}-{plugin_id}.json"
-    ))
+fn agent_cache_server_dir(cache_dir: &Path, zellij_pid: u32) -> std::path::PathBuf {
+    cache_dir.join(format!("{AGENT_CACHE_PREFIX}-{zellij_pid}"))
 }
 
-fn parse_agent_cache_filename(file_name: &str, zellij_pid: u32) -> Option<u32> {
+fn agent_cache_path(cache_dir: &Path, zellij_pid: u32, plugin_id: u32) -> std::path::PathBuf {
+    agent_cache_server_dir(cache_dir, zellij_pid)
+        .join(format!("{AGENT_CACHE_PREFIX}-{plugin_id}.json"))
+}
+
+fn parse_agent_cache_filename(file_name: &str) -> Option<u32> {
+    let stem = file_name.strip_suffix(".json")?;
+    let suffix = stem.strip_prefix(&format!("{AGENT_CACHE_PREFIX}-"))?;
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    suffix.parse().ok()
+}
+
+fn parse_legacy_agent_cache_filename(file_name: &str, zellij_pid: u32) -> Option<u32> {
     let stem = file_name.strip_suffix(".json")?;
     let suffix = stem.strip_prefix(&format!("{AGENT_CACHE_PREFIX}-{zellij_pid}-"))?;
     if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -850,13 +865,12 @@ fn persist_agent_cache(
     let Some(snapshot) = serialize_agent_snapshot(records, acknowledgements) else {
         return false;
     };
-    if snapshot.len() > AGENT_CACHE_MAX_BYTES || std::fs::create_dir_all(cache_dir).is_err() {
+    let server_dir = agent_cache_server_dir(cache_dir, zellij_pid);
+    if snapshot.len() > AGENT_CACHE_MAX_BYTES || std::fs::create_dir_all(&server_dir).is_err() {
         return false;
     }
     let destination = agent_cache_path(cache_dir, zellij_pid, plugin_id);
-    let temporary = cache_dir.join(format!(
-        ".{AGENT_CACHE_PREFIX}-{zellij_pid}-{plugin_id}.tmp"
-    ));
+    let temporary = server_dir.join(format!(".{AGENT_CACHE_PREFIX}-{plugin_id}.tmp"));
     if std::fs::write(&temporary, snapshot).is_err() {
         return false;
     }
@@ -873,7 +887,17 @@ fn restore_agent_cache(
     records: &mut HashMap<u32, AgentRecord>,
     acknowledgements: &mut HashMap<u32, AgentAcknowledgement>,
 ) -> bool {
-    let Ok(entries) = std::fs::read_dir(cache_dir) else {
+    let server_dir = agent_cache_server_dir(cache_dir, zellij_pid);
+    let server_shard_exists = server_dir.is_dir();
+    let source_dir = if server_shard_exists {
+        server_dir.as_path()
+    } else {
+        cache_dir
+    };
+    let Ok(entries) = std::fs::read_dir(source_dir) else {
+        if !server_shard_exists {
+            let _ = std::fs::create_dir_all(&server_dir);
+        }
         return false;
     };
     let mut paths = entries
@@ -881,13 +905,17 @@ fn restore_agent_cache(
         .filter_map(|entry| {
             let file_name = entry.file_name();
             let file_name = file_name.to_str()?;
-            parse_agent_cache_filename(file_name, zellij_pid)?;
+            if server_shard_exists {
+                parse_agent_cache_filename(file_name)?;
+            } else {
+                parse_legacy_agent_cache_filename(file_name, zellij_pid)?;
+            }
             Some(entry.path())
         })
         .collect::<Vec<_>>();
     paths.sort();
 
-    paths.into_iter().fold(false, |changed, path| {
+    let changed = paths.into_iter().fold(false, |changed, path| {
         let payload = std::fs::metadata(&path)
             .ok()
             .filter(|metadata| metadata.is_file() && metadata.len() <= AGENT_CACHE_MAX_BYTES as u64)
@@ -895,7 +923,11 @@ fn restore_agent_cache(
         payload.map_or(changed, |payload| {
             apply_agent_snapshot(records, acknowledgements, &payload) || changed
         })
-    })
+    });
+    if !server_shard_exists && !changed {
+        let _ = std::fs::create_dir_all(server_dir);
+    }
+    changed
 }
 
 fn send_plugin_message(destination_plugin_id: u32, name: &str, payload: String) {
@@ -904,6 +936,28 @@ fn send_plugin_message(destination_plugin_id: u32, name: &str, payload: String) 
             .with_destination_plugin_id(destination_plugin_id)
             .with_payload(payload),
     );
+}
+
+fn is_sync_leader(plugin_id: Option<u32>, peer_plugin_ids: &HashSet<u32>) -> bool {
+    plugin_id.is_some_and(|plugin_id| sync_leader_id(plugin_id, peer_plugin_ids) == plugin_id)
+}
+
+fn sync_leader_id(plugin_id: u32, peer_plugin_ids: &HashSet<u32>) -> u32 {
+    peer_plugin_ids.iter().copied().fold(plugin_id, u32::min)
+}
+
+fn focus_sync_recipients(plugin_id: Option<u32>, peer_plugin_ids: &HashSet<u32>) -> Vec<u32> {
+    let Some(plugin_id) = plugin_id else {
+        return Vec::new();
+    };
+    let leader_id = sync_leader_id(plugin_id, peer_plugin_ids);
+    if plugin_id == leader_id {
+        let mut recipients = peer_plugin_ids.iter().copied().collect::<Vec<_>>();
+        recipients.sort_unstable();
+        recipients
+    } else {
+        vec![leader_id]
+    }
 }
 
 fn apply_agent_status(records: &mut HashMap<u32, AgentRecord>, update: AgentStatusUpdate) -> bool {
@@ -2140,6 +2194,40 @@ mod tests {
     }
 
     #[test]
+    fn lowest_live_plugin_is_the_only_sync_leader_and_turnover_is_deterministic() {
+        let plugin_ids = [4, 6, 9];
+        let leaders = plugin_ids
+            .into_iter()
+            .filter(|plugin_id| {
+                let peers = plugin_ids
+                    .into_iter()
+                    .filter(|peer_id| peer_id != plugin_id)
+                    .collect();
+                is_sync_leader(Some(*plugin_id), &peers)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(leaders, vec![4]);
+        assert!(is_sync_leader(Some(6), &HashSet::from([9])));
+        assert!(!is_sync_leader(Some(9), &HashSet::from([6])));
+        assert!(is_sync_leader(Some(6), &HashSet::new()));
+        assert!(!is_sync_leader(None, &HashSet::new()));
+
+        assert_eq!(
+            focus_sync_recipients(Some(4), &HashSet::from([6, 9])),
+            vec![6, 9]
+        );
+        assert_eq!(
+            focus_sync_recipients(Some(6), &HashSet::from([4, 9])),
+            vec![4]
+        );
+        assert_eq!(
+            focus_sync_recipients(Some(9), &HashSet::from([4, 6])),
+            vec![4]
+        );
+        assert!(focus_sync_recipients(None, &HashSet::from([4, 6])).is_empty());
+    }
+
+    #[test]
     fn pane_cleanup_removes_closed_pane_records() {
         let record = |state| AgentRecord {
             session_id: "session".to_owned(),
@@ -2683,6 +2771,65 @@ mod tests {
         ));
         assert_eq!(restored_records, records);
         assert!(restored_acknowledgements.is_empty());
+
+        std::fs::remove_dir_all(cache_dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_cache_migrates_once_and_server_shard_ignores_flat_history() {
+        let cache_dir = temp_directory("cache-migration");
+        let legacy_records = HashMap::from([(7, agent_record(AgentState::Done))]);
+        let legacy_acknowledgements = HashMap::from([(7, acknowledgement("session", 1))]);
+        let legacy_snapshot =
+            serialize_agent_snapshot(&legacy_records, &legacy_acknowledgements).unwrap();
+        std::fs::write(cache_dir.join("agent-status-300-9.json"), legacy_snapshot).unwrap();
+
+        let mut restored_records = HashMap::new();
+        let mut restored_acknowledgements = HashMap::new();
+        assert!(restore_agent_cache(
+            &cache_dir,
+            300,
+            &mut restored_records,
+            &mut restored_acknowledgements,
+        ));
+        assert_eq!(restored_records, legacy_records);
+        assert_eq!(restored_acknowledgements, legacy_acknowledgements);
+        assert!(persist_agent_cache(
+            &cache_dir,
+            300,
+            10,
+            &restored_records,
+            &restored_acknowledgements,
+        ));
+        assert!(agent_cache_path(&cache_dir, 300, 10).is_file());
+
+        let stale_flat = serialize_agent_snapshot(
+            &HashMap::from([(
+                8,
+                AgentRecord {
+                    session_id: "stale".to_owned(),
+                    state: AgentState::Waiting,
+                    updated_at_ms: 99,
+                    event: None,
+                    turn_id: None,
+                },
+            )]),
+            &HashMap::new(),
+        )
+        .unwrap();
+        std::fs::write(cache_dir.join("agent-status-300-11.json"), stale_flat).unwrap();
+
+        let mut sharded_records = HashMap::new();
+        let mut sharded_acknowledgements = HashMap::new();
+        assert!(restore_agent_cache(
+            &cache_dir,
+            300,
+            &mut sharded_records,
+            &mut sharded_acknowledgements,
+        ));
+        assert_eq!(sharded_records, legacy_records);
+        assert_eq!(sharded_acknowledgements, legacy_acknowledgements);
+        assert!(!sharded_records.contains_key(&8));
 
         std::fs::remove_dir_all(cache_dir).unwrap();
     }

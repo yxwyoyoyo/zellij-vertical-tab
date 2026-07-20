@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 from typing import Any
@@ -99,6 +100,43 @@ def journal_root() -> Path:
 def server_directory(zellij_pid: int) -> Path | None:
     parsed_pid = parse_positive_pid(zellij_pid)
     return journal_root() / "sessions" / str(parsed_pid) if parsed_pid else None
+
+
+def process_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def prune_dead_server_directories(current_zellij_pid: int) -> int:
+    current_pid = parse_positive_pid(current_zellij_pid)
+    if current_pid is None:
+        return 0
+    sessions = journal_root() / "sessions"
+    try:
+        entries = list(sessions.iterdir())
+    except OSError:
+        return 0
+    removed = 0
+    for entry in entries:
+        stale_pid = parse_positive_pid(entry.name)
+        if (
+            stale_pid is None
+            or stale_pid == current_pid
+            or not entry.is_dir()
+            or process_is_running(stale_pid)
+        ):
+            continue
+        try:
+            shutil.rmtree(entry)
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def _read_record(path: Path) -> dict[str, Any] | None:
