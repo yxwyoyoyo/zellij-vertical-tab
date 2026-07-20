@@ -42,22 +42,76 @@ EVENT_STATES = {
     "UserPromptSubmit": "working",
     "PreToolUse": "working",
     "PermissionRequest": "waiting",
+    "PostToolUse": "working",
     "Stop": "done",
 }
+EVENT_NAMES = {
+    "SessionStart": "session_start",
+    "UserPromptSubmit": "user_prompt_submit",
+    "PreToolUse": "pre_tool_use",
+    "PermissionRequest": "permission_request",
+    "PostToolUse": "post_tool_use",
+    "Stop": "stop",
+}
+TRANSCRIPT_TAIL_MAX_BYTES = 8 * 1024 * 1024
+
+
+def approvals_reviewer_for_turn(
+    transcript_path: object, turn_id: object
+) -> str | None:
+    if not isinstance(transcript_path, str) or not transcript_path.strip():
+        return None
+    if not isinstance(turn_id, str) or not turn_id.strip():
+        return None
+    try:
+        with open(transcript_path, "rb") as transcript:
+            transcript.seek(0, os.SEEK_END)
+            size = transcript.tell()
+            start = max(0, size - TRANSCRIPT_TAIL_MAX_BYTES)
+            transcript.seek(start)
+            if start:
+                transcript.readline()
+            reviewer = None
+            for raw_line in transcript:
+                try:
+                    record = json.loads(raw_line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(record, dict) or record.get("type") != "turn_context":
+                    continue
+                payload = record.get("payload")
+                if not isinstance(payload, dict) or payload.get("turn_id") != turn_id:
+                    continue
+                candidate = payload.get("approvals_reviewer")
+                if isinstance(candidate, str):
+                    reviewer = candidate
+            return reviewer
+    except OSError:
+        return None
 
 
 def build_payload(hook_input: dict[str, Any], pane_id: str) -> dict[str, Any] | None:
-    state = EVENT_STATES.get(hook_input.get("hook_event_name"))
+    hook_event = hook_input.get("hook_event_name")
+    state = EVENT_STATES.get(hook_event)
     session_id = hook_input.get("session_id")
     if state is None or not isinstance(session_id, str) or not session_id.strip():
         return None
-    return {
+    turn_id = hook_input.get("turn_id")
+    if hook_event == "PermissionRequest" and approvals_reviewer_for_turn(
+        hook_input.get("transcript_path"), turn_id
+    ) == "auto_review":
+        state = "working"
+    payload = {
         "version": PROTOCOL_VERSION,
         "pane_id": pane_id,
         "session_id": session_id,
         "state": state,
         "updated_at_ms": time.time_ns() // 1_000_000,
+        "event": EVENT_NAMES[hook_event],
     }
+    if isinstance(turn_id, str) and turn_id.strip():
+        payload["turn_id"] = turn_id
+    return payload
 
 
 def build_clear_payload(pane_id: str, session_id: str) -> dict[str, Any]:
@@ -67,6 +121,7 @@ def build_clear_payload(pane_id: str, session_id: str) -> dict[str, Any]:
         "session_id": session_id,
         "state": "clear",
         "updated_at_ms": time.time_ns() // 1_000_000,
+        "event": "session_exit",
     }
 
 

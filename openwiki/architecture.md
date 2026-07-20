@@ -69,14 +69,17 @@ Because the same row objects expose both presentation state and `RowTarget`, hie
 
 ## Per-pane Codex status and synchronization
 
-The [Codex bridge workflow](development.md#codex-bridge-installation) publishes version-1 JSON on `vertical-tab-agent-status` with pane ID, session ID, state, and millisecond timestamp. States are `idle`, `working`, `waiting`, `done`, and `clear`; their visible glyphs use dim, cyan emphasis, orange emphasis, and success styling respectively.
+The [Codex bridge workflow](development.md#codex-bridge-installation) publishes version-1 JSON on `vertical-tab-agent-status` with pane ID, session ID, state, millisecond timestamp, and optional normalized lifecycle event and Codex turn ID. States are `idle`, `working`, `waiting`, `done`, and `clear`; their visible glyphs use dim, cyan emphasis, orange emphasis, and success styling respectively. A manually reviewed `PermissionRequest` enters waiting, while a request whose turn context identifies automatic review remains working. `PostToolUse` returns either path to working after an approved tool finishes. Within the same turn, done is terminal against delayed tool and permission events; a new `UserPromptSubmit` reopens the session as working. Legacy version-1 records without optional lifecycle metadata remain valid.
 
 ### Update rules
 
-`parse_agent_status` accepts only the supported version, a terminal pane ID, a non-empty session ID, a recognized state, and valid JSON. `apply_agent_status` then enforces per-pane current ownership:
+`parse_agent_status` accepts only the supported version, a terminal pane ID, a non-empty session ID, a recognized state, valid optional lifecycle metadata, and valid JSON. `apply_agent_status` then enforces per-pane current ownership:
 
 - an older timestamp cannot replace a newer record;
 - a newer session can replace a prior session in a reused pane;
+- auto-reviewed permission requests remain working when reviewer context is available;
+- `PostToolUse` replaces waiting with working after an approved tool finishes;
+- done rejects delayed events from its turn, while a new prompt or distinct known turn may resume work;
 - `clear` is accepted only for the matching current session;
 - a retained `clear` tombstone prevents delayed messages from resurrecting state;
 - `PaneUpdate` removes records for terminal panes that no longer exist.
@@ -97,11 +100,11 @@ There is no dominant-state precedence and no pane-count suffix in the current de
 
 ### Durable recovery
 
-The Python bridges use `status_store.py` to write each validated lifecycle event before pipe publication. Records are isolated by Zellij server PID and terminal pane, serialized under an advisory per-pane lock, and replaced atomically. This host journal remains available when a detached session has no plugin runtime to receive an undirected pipe, including a watcher-generated `clear` after Codex exits.
+The Python bridges use `status_store.py` to write each validated lifecycle event before pipe publication. Records are isolated by Zellij server PID and terminal pane, serialized under an advisory per-pane lock, ordered by timestamp, session, turn, and terminal-completion rules, and replaced atomically. This host journal remains available when a detached session has no plugin runtime to receive an undirected pipe, including a watcher-generated `clear` after Codex exits.
 
-Every plugin mutation also serializes lifecycle records and exact acknowledgement references to a per-server, per-plugin file under `/cache`. On `load()`, an instance scans only bounded, well-formed files for its current server PID and merges them through the normal timestamp/session rules. It deliberately does not restore `focused_terminal_panes`, so runtime startup cannot fabricate a focus transition or acknowledge an unseen completion.
+Every plugin mutation also serializes lifecycle records and exact acknowledgement references to a per-server, per-plugin file under `/cache`. On `load()`, an instance scans only bounded, well-formed files for its current server PID and merges them through the normal timestamp, session, turn, and terminal-completion rules. It deliberately does not restore `focused_terminal_panes`, so runtime startup cannot fabricate a focus transition or acknowledge an unseen completion.
 
-After `RunCommands` is granted, the plugin runs the fixed global `agent_status.py --snapshot <zellij-pid>` helper once. Only a successful, bounded UTF-8 result with the matching command context is parsed. Host recovery, cache recovery, peer snapshots, and live pipe updates all enter through the same versioned snapshot/status validators, so a newer live update wins regardless of arrival order. Invalid files, denied permission, helper failure, and unavailable persistence are ignored without disabling in-memory status handling. Server-PID namespacing prevents another live Zellij server with reused pane IDs from inheriting state; persistence is not intended to resurrect a session after its server process exits.
+After `RunCommands` is granted, the plugin runs the fixed global `agent_status.py --snapshot <zellij-pid>` helper once. Only a successful, bounded UTF-8 result with the matching command context is parsed. Host recovery, cache recovery, peer snapshots, and live pipe updates all enter through the same versioned snapshot/status validators and turn-aware ordering, so arrival path cannot change the resulting lifecycle state. Invalid files, denied permission, helper failure, and unavailable persistence are ignored without disabling in-memory status handling. Server-PID namespacing prevents another live Zellij server with reused pane IDs from inheriting state; persistence is not intended to resurrect a session after its server process exits.
 
 ## Rendering and interaction rules
 

@@ -14,6 +14,16 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 SUPPORTED_STATES = {"idle", "working", "waiting", "done", "clear"}
+SUPPORTED_EVENTS = {
+    "session_start",
+    "user_prompt_submit",
+    "pre_tool_use",
+    "permission_request",
+    "post_tool_use",
+    "stop",
+    "agent_turn_complete",
+    "session_exit",
+}
 MAX_RECORD_BYTES = 64 * 1024
 MAX_ANCESTORS = 16
 STATE_DIR_ENV = "ZELLIJ_VERTICAL_TAB_STATE_DIR"
@@ -45,6 +55,8 @@ def validate_payload(payload: object) -> dict[str, Any] | None:
     session_id = payload.get("session_id")
     state = payload.get("state")
     updated_at_ms = payload.get("updated_at_ms")
+    event = payload.get("event")
+    turn_id = payload.get("turn_id")
     if (
         payload.get("version") != PROTOCOL_VERSION
         or pane_id is None
@@ -54,15 +66,22 @@ def validate_payload(payload: object) -> dict[str, Any] | None:
         or isinstance(updated_at_ms, bool)
         or not isinstance(updated_at_ms, int)
         or updated_at_ms <= 0
+        or (event is not None and event not in SUPPORTED_EVENTS)
+        or (turn_id is not None and (not isinstance(turn_id, str) or not turn_id.strip()))
     ):
         return None
-    return {
+    validated = {
         "version": PROTOCOL_VERSION,
         "pane_id": f"terminal_{pane_id}",
         "session_id": session_id,
         "state": state,
         "updated_at_ms": updated_at_ms,
     }
+    if event is not None:
+        validated["event"] = event
+    if turn_id is not None:
+        validated["turn_id"] = turn_id
+    return validated
 
 
 def journal_root() -> Path:
@@ -98,6 +117,16 @@ def _should_apply(current: dict[str, Any] | None, update: dict[str, Any]) -> boo
         return False
     if update["state"] == "clear" and update["session_id"] != current["session_id"]:
         return False
+    if (
+        current["state"] == "done"
+        and update["state"] != "clear"
+        and update["session_id"] == current["session_id"]
+    ):
+        current_turn = current.get("turn_id")
+        update_turn = update.get("turn_id")
+        if current_turn is not None and update_turn is not None:
+            return current_turn != update_turn
+        return update.get("event") == "user_prompt_submit"
     return True
 
 

@@ -15,14 +15,21 @@ def payload(
     state: str = "working",
     session_id: str = "session",
     pane_id: str = "terminal_7",
+    event: str | None = None,
+    turn_id: str | None = None,
 ):
-    return {
+    result = {
         "version": 1,
         "pane_id": pane_id,
         "session_id": session_id,
         "state": state,
         "updated_at_ms": timestamp,
     }
+    if event is not None:
+        result["event"] = event
+    if turn_id is not None:
+        result["turn_id"] = turn_id
+    return result
 
 
 class StatusStoreTests(unittest.TestCase):
@@ -49,8 +56,14 @@ class StatusStoreTests(unittest.TestCase):
             payload(10, state="unknown"),
             payload(10, session_id=""),
             payload(10, pane_id="plugin_7"),
+            payload(10, event="unknown"),
+            payload(10, turn_id=""),
         ]:
             self.assertIsNone(status_store.validate_payload(invalid))
+
+    def test_preserves_supported_event_and_turn_identity(self):
+        record = payload(10, event="post_tool_use", turn_id="turn-1")
+        self.assertEqual(status_store.validate_payload(record), record)
 
     def test_retains_newest_record_and_matching_session_clear(self):
         self.assertTrue(status_store.apply_payload(payload(10), 123))
@@ -68,6 +81,39 @@ class StatusStoreTests(unittest.TestCase):
             Path(self.temporary.name) / "sessions" / "123" / "terminal_7.json"
         )
         self.assertEqual(record_path.stat().st_mode & 0o777, 0o600)
+
+    def test_done_is_terminal_within_turn_and_post_tool_recovers_waiting(self):
+        waiting = payload(
+            10, state="waiting", event="permission_request", turn_id="turn-1"
+        )
+        resumed = payload(11, event="post_tool_use", turn_id="turn-1")
+        done = payload(12, state="done", event="stop", turn_id="turn-1")
+        delayed = payload(13, event="post_tool_use", turn_id="turn-1")
+
+        self.assertTrue(status_store.apply_payload(waiting, 123))
+        self.assertTrue(status_store.apply_payload(resumed, 123))
+        self.assertTrue(status_store.apply_payload(done, 123))
+        self.assertFalse(status_store.apply_payload(delayed, 123))
+        self.assertEqual(status_store.load_snapshot(123)["records"], [done])
+
+    def test_new_turn_reopens_done_with_and_without_prior_turn_identity(self):
+        for zellij_pid, done in [
+            (123, payload(10, state="done", event="stop", turn_id="turn-1")),
+            (124, payload(10, state="done")),
+        ]:
+            self.assertTrue(status_store.apply_payload(done, zellij_pid))
+            self.assertFalse(
+                status_store.apply_payload(
+                    payload(11, event="post_tool_use", turn_id="turn-1"), zellij_pid
+                )
+            )
+            new_prompt = payload(
+                12, event="user_prompt_submit", turn_id="turn-2"
+            )
+            self.assertTrue(status_store.apply_payload(new_prompt, zellij_pid))
+            self.assertEqual(
+                status_store.load_snapshot(zellij_pid)["records"], [new_prompt]
+            )
 
     def test_snapshot_skips_malformed_mismatched_and_oversized_files(self):
         directory = Path(self.temporary.name) / "sessions" / "123"

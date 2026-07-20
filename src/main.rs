@@ -51,6 +51,19 @@ enum AgentState {
     Clear,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AgentLifecycleEvent {
+    SessionStart,
+    UserPromptSubmit,
+    PreToolUse,
+    PermissionRequest,
+    PostToolUse,
+    Stop,
+    AgentTurnComplete,
+    SessionExit,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BadgeColor {
     Dim,
@@ -91,6 +104,10 @@ struct AgentStatusPayload {
     session_id: String,
     state: AgentState,
     updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event: Option<AgentLifecycleEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -106,6 +123,8 @@ struct AgentRecord {
     session_id: String,
     state: AgentState,
     updated_at_ms: u64,
+    event: Option<AgentLifecycleEvent>,
+    turn_id: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -655,7 +674,14 @@ fn parse_terminal_pane_id(value: &str) -> Option<u32> {
 
 fn parse_agent_status(payload: &str) -> Option<AgentStatusUpdate> {
     let payload: AgentStatusPayload = serde_json::from_str(payload).ok()?;
-    if payload.version != AGENT_STATUS_VERSION || payload.session_id.trim().is_empty() {
+    if payload.version != AGENT_STATUS_VERSION
+        || payload.session_id.trim().is_empty()
+        || payload.updated_at_ms == 0
+        || payload
+            .turn_id
+            .as_ref()
+            .is_some_and(|turn_id| turn_id.trim().is_empty())
+    {
         return None;
     }
     Some(AgentStatusUpdate {
@@ -664,6 +690,8 @@ fn parse_agent_status(payload: &str) -> Option<AgentStatusUpdate> {
             session_id: payload.session_id,
             state: payload.state,
             updated_at_ms: payload.updated_at_ms,
+            event: payload.event,
+            turn_id: payload.turn_id,
         },
     })
 }
@@ -737,6 +765,8 @@ fn serialize_agent_snapshot(
             session_id: record.session_id.clone(),
             state: record.state,
             updated_at_ms: record.updated_at_ms,
+            event: record.event,
+            turn_id: record.turn_id.clone(),
         })
         .collect::<Vec<_>>();
     records.sort_by(|left, right| left.pane_id.cmp(&right.pane_id));
@@ -889,6 +919,18 @@ fn apply_agent_status(records: &mut HashMap<u32, AgentRecord>, update: AgentStat
             .get(&update.pane_id)
             .is_some_and(|current| current.session_id != update.record.session_id)
     {
+        return false;
+    }
+
+    if records.get(&update.pane_id).is_some_and(|current| {
+        current.session_id == update.record.session_id
+            && current.state == AgentState::Done
+            && update.record.state != AgentState::Clear
+            && match (&current.turn_id, &update.record.turn_id) {
+                (Some(current_turn), Some(update_turn)) => current_turn == update_turn,
+                _ => update.record.event != Some(AgentLifecycleEvent::UserPromptSubmit),
+            }
+    }) {
         return false;
     }
 
@@ -1454,6 +1496,8 @@ mod tests {
             session_id: "session".to_owned(),
             state,
             updated_at_ms: 1,
+            event: None,
+            turn_id: None,
         }
     }
 
@@ -1624,6 +1668,27 @@ mod tests {
                     session_id: "session-a".to_owned(),
                     state: AgentState::Working,
                     updated_at_ms: 42,
+                    event: None,
+                    turn_id: None,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parses_optional_lifecycle_event_and_turn_identity() {
+        assert_eq!(
+            parse_agent_status(
+                r#"{"version":1,"pane_id":"terminal_7","session_id":"session-a","state":"working","updated_at_ms":42,"event":"post_tool_use","turn_id":"turn-1"}"#,
+            ),
+            Some(AgentStatusUpdate {
+                pane_id: 7,
+                record: AgentRecord {
+                    session_id: "session-a".to_owned(),
+                    state: AgentState::Working,
+                    updated_at_ms: 42,
+                    event: Some(AgentLifecycleEvent::PostToolUse),
+                    turn_id: Some("turn-1".to_owned()),
                 },
             })
         );
@@ -1637,6 +1702,9 @@ mod tests {
             r#"{"version":1,"pane_id":"plugin_7","session_id":"s","state":"working","updated_at_ms":1}"#,
             r#"{"version":1,"pane_id":"terminal_7","session_id":"","state":"working","updated_at_ms":1}"#,
             r#"{"version":1,"pane_id":"terminal_7","session_id":"s","state":"unknown","updated_at_ms":1}"#,
+            r#"{"version":1,"pane_id":"terminal_7","session_id":"s","state":"working","updated_at_ms":0}"#,
+            r#"{"version":1,"pane_id":"terminal_7","session_id":"s","state":"working","updated_at_ms":1,"event":"unknown"}"#,
+            r#"{"version":1,"pane_id":"terminal_7","session_id":"s","state":"working","updated_at_ms":1,"turn_id":""}"#,
         ] {
             assert_eq!(parse_agent_status(payload), None, "payload: {payload}");
         }
@@ -1720,6 +1788,8 @@ mod tests {
                 session_id: "session".to_owned(),
                 state: AgentState::Done,
                 updated_at_ms: 20,
+                event: None,
+                turn_id: None,
             },
         )]);
         let acknowledgements = HashMap::from([(4, acknowledgement("session", 20))]);
@@ -1752,6 +1822,8 @@ mod tests {
             session_id: "session".to_owned(),
             state: AgentState::Working,
             updated_at_ms: 21,
+            event: None,
+            turn_id: None,
         };
         assert!(prune_superseded_agent_acknowledgement(
             &mut acknowledgements,
@@ -1778,6 +1850,8 @@ mod tests {
                 session_id: session.to_owned(),
                 state,
                 updated_at_ms,
+                event: None,
+                turn_id: None,
             },
         };
 
@@ -1799,6 +1873,93 @@ mod tests {
     }
 
     #[test]
+    fn post_tool_use_recovers_waiting_but_cannot_reopen_completed_turn() {
+        let update = |state, updated_at_ms, event| AgentStatusUpdate {
+            pane_id: 3,
+            record: AgentRecord {
+                session_id: "session".to_owned(),
+                state,
+                updated_at_ms,
+                event: Some(event),
+                turn_id: Some("turn-1".to_owned()),
+            },
+        };
+        let mut records = HashMap::new();
+
+        assert!(apply_agent_status(
+            &mut records,
+            update(
+                AgentState::Waiting,
+                10,
+                AgentLifecycleEvent::PermissionRequest
+            )
+        ));
+        assert!(apply_agent_status(
+            &mut records,
+            update(AgentState::Working, 11, AgentLifecycleEvent::PostToolUse)
+        ));
+        assert_eq!(records[&3].state, AgentState::Working);
+        assert!(apply_agent_status(
+            &mut records,
+            update(AgentState::Done, 12, AgentLifecycleEvent::Stop)
+        ));
+        assert!(!apply_agent_status(
+            &mut records,
+            update(AgentState::Working, 13, AgentLifecycleEvent::PostToolUse)
+        ));
+        assert!(!apply_agent_status(
+            &mut records,
+            update(
+                AgentState::Waiting,
+                14,
+                AgentLifecycleEvent::PermissionRequest
+            )
+        ));
+        assert_eq!(records[&3].state, AgentState::Done);
+    }
+
+    #[test]
+    fn new_prompt_reopens_done_with_or_without_known_turn_identity() {
+        for current_turn in [Some("turn-1".to_owned()), None] {
+            let mut records = HashMap::from([(
+                3,
+                AgentRecord {
+                    session_id: "session".to_owned(),
+                    state: AgentState::Done,
+                    updated_at_ms: 10,
+                    event: Some(AgentLifecycleEvent::Stop),
+                    turn_id: current_turn,
+                },
+            )]);
+            let delayed_post_tool = AgentStatusUpdate {
+                pane_id: 3,
+                record: AgentRecord {
+                    session_id: "session".to_owned(),
+                    state: AgentState::Working,
+                    updated_at_ms: 11,
+                    event: Some(AgentLifecycleEvent::PostToolUse),
+                    turn_id: Some("turn-1".to_owned()),
+                },
+            };
+            assert!(!apply_agent_status(&mut records, delayed_post_tool));
+
+            let new_prompt = AgentStatusUpdate {
+                pane_id: 3,
+                record: AgentRecord {
+                    session_id: "session".to_owned(),
+                    state: AgentState::Working,
+                    updated_at_ms: 12,
+                    event: Some(AgentLifecycleEvent::UserPromptSubmit),
+                    turn_id: Some("turn-2".to_owned()),
+                },
+            };
+            assert!(apply_agent_status(&mut records, new_prompt));
+            assert_eq!(records[&3].state, AgentState::Working);
+            assert_eq!(records[&3].turn_id.as_deref(), Some("turn-2"));
+        }
+    }
+
+    #[test]
     fn clear_removes_current_record_but_not_when_stale() {
         let mut records = HashMap::from([(
             4,
@@ -1806,6 +1967,8 @@ mod tests {
                 session_id: "session".to_owned(),
                 state: AgentState::Done,
                 updated_at_ms: 20,
+                event: None,
+                turn_id: None,
             },
         )]);
         let clear = |updated_at_ms| AgentStatusUpdate {
@@ -1814,6 +1977,8 @@ mod tests {
                 session_id: "session".to_owned(),
                 state: AgentState::Clear,
                 updated_at_ms,
+                event: None,
+                turn_id: None,
             },
         };
 
@@ -1829,6 +1994,8 @@ mod tests {
                     session_id: "session".to_owned(),
                     state: AgentState::Working,
                     updated_at_ms: 19,
+                    event: None,
+                    turn_id: None,
                 },
             }
         ));
@@ -1843,6 +2010,8 @@ mod tests {
                 session_id: "new-session".to_owned(),
                 state: AgentState::Working,
                 updated_at_ms: 20,
+                event: None,
+                turn_id: None,
             },
         )]);
         let old_clear = AgentStatusUpdate {
@@ -1851,6 +2020,8 @@ mod tests {
                 session_id: "old-session".to_owned(),
                 state: AgentState::Clear,
                 updated_at_ms: 21,
+                event: None,
+                turn_id: None,
             },
         };
 
@@ -1922,6 +2093,8 @@ mod tests {
                 session_id: "session".to_owned(),
                 state: AgentState::Clear,
                 updated_at_ms: 20,
+                event: None,
+                turn_id: None,
             },
         )]);
         assert_eq!(renderable_agent_state(&records, &HashMap::new(), 4), None);
@@ -1972,6 +2145,8 @@ mod tests {
             session_id: "session".to_owned(),
             state,
             updated_at_ms: 1,
+            event: None,
+            turn_id: None,
         };
         let mut records = HashMap::from([
             (1, record(AgentState::Working)),
@@ -2166,6 +2341,8 @@ mod tests {
                     session_id: "focused-session".to_owned(),
                     state: AgentState::Done,
                     updated_at_ms: 42,
+                    event: None,
+                    turn_id: None,
                 },
             ),
             (
@@ -2174,6 +2351,8 @@ mod tests {
                     session_id: "inactive-session".to_owned(),
                     state: AgentState::Done,
                     updated_at_ms: 43,
+                    event: None,
+                    turn_id: None,
                 },
             ),
         ]);
@@ -2224,6 +2403,8 @@ mod tests {
                     session_id: "local-session".to_owned(),
                     state: AgentState::Done,
                     updated_at_ms: 42,
+                    event: None,
+                    turn_id: None,
                 },
             ),
             (
@@ -2232,6 +2413,8 @@ mod tests {
                     session_id: "viewed-session".to_owned(),
                     state: AgentState::Done,
                     updated_at_ms: 43,
+                    event: None,
+                    turn_id: None,
                 },
             ),
         ]);
@@ -2274,6 +2457,8 @@ mod tests {
                 session_id: "completed-elsewhere".to_owned(),
                 state: AgentState::Done,
                 updated_at_ms: 44,
+                event: None,
+                turn_id: None,
             },
         }));
         assert!(state.agent_acknowledgements.is_empty());
@@ -2333,6 +2518,8 @@ mod tests {
                     session_id: "one".to_owned(),
                     state: AgentState::Idle,
                     updated_at_ms: 10,
+                    event: None,
+                    turn_id: None,
                 },
             ),
             (
@@ -2341,6 +2528,8 @@ mod tests {
                     session_id: "two".to_owned(),
                     state: AgentState::Working,
                     updated_at_ms: 20,
+                    event: None,
+                    turn_id: None,
                 },
             ),
         ]);
@@ -2352,6 +2541,8 @@ mod tests {
                 session_id: "newer".to_owned(),
                 state: AgentState::Waiting,
                 updated_at_ms: 11,
+                event: None,
+                turn_id: None,
             },
         )]);
 
@@ -2385,6 +2576,8 @@ mod tests {
                 session_id: "session".to_owned(),
                 state: AgentState::Done,
                 updated_at_ms: 42,
+                event: None,
+                turn_id: None,
             },
         )]);
         let source_acknowledgements = HashMap::from([(7, acknowledgement("session", 42))]);
@@ -2411,6 +2604,8 @@ mod tests {
                 session_id: "before-status".to_owned(),
                 state: AgentState::Done,
                 updated_at_ms: 60,
+                event: None,
+                turn_id: None,
             },
         );
         assert_eq!(
@@ -2428,6 +2623,8 @@ mod tests {
                 session_id: "completed".to_owned(),
                 state: AgentState::Done,
                 updated_at_ms: 42,
+                event: None,
+                turn_id: None,
             },
         )]);
         let acknowledgements = HashMap::from([(7, acknowledgement("completed", 42))]);
@@ -2498,6 +2695,8 @@ mod tests {
                 session_id: "session".to_owned(),
                 state: AgentState::Done,
                 updated_at_ms: 10,
+                event: None,
+                turn_id: None,
             },
         )]);
         let mut acknowledgements = HashMap::from([(5, acknowledgement("session", 10))]);
@@ -2508,6 +2707,8 @@ mod tests {
                     session_id: "session".to_owned(),
                     state: AgentState::Clear,
                     updated_at_ms: 20,
+                    event: None,
+                    turn_id: None,
                 },
             )]),
             &HashMap::new(),
@@ -2527,6 +2728,8 @@ mod tests {
                 session_id: "next".to_owned(),
                 state: AgentState::Working,
                 updated_at_ms: 30,
+                event: None,
+                turn_id: None,
             },
         );
         assert!(!apply_agent_snapshot(

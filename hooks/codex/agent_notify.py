@@ -51,13 +51,18 @@ def build_done_payload(raw_notification: str, pane_id: str) -> dict[str, Any] | 
     session_id = notification.get("thread-id", notification.get("thread_id"))
     if not isinstance(session_id, str) or not session_id.strip():
         return None
-    return {
+    payload = {
         "version": PROTOCOL_VERSION,
         "pane_id": pane_id,
         "session_id": session_id,
         "state": "done",
         "updated_at_ms": time.time_ns() // 1_000_000,
+        "event": "agent_turn_complete",
     }
+    turn_id = notification.get("turn-id", notification.get("turn_id"))
+    if isinstance(turn_id, str) and turn_id.strip():
+        payload["turn_id"] = turn_id
+    return payload
 
 
 def publish_payload(payload: dict[str, Any]) -> None:

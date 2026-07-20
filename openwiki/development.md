@@ -76,7 +76,7 @@ notification_method = "bel"
 notification_condition = "always"
 ```
 
-To preserve an existing notifier, place its command and fixed arguments between `--forward` and the final `--`, as shown in `README.md`. The lifecycle bridge maps `SessionStart` to idle, `UserPromptSubmit`/`PreToolUse` to working, `PermissionRequest` to waiting, and `Stop` to done. The notification bridge covers `agent-turn-complete`; the detached watcher emits clear when the Codex process exits. Each valid event is written first to a per-server, per-pane journal by `status_store.py`, then published to the normal pipe. The bridge can also return one bounded version-1 server snapshot for plugin recovery. All persistence and publication are best-effort and return success when outside Zellij or when unavailable.
+To preserve an existing notifier, place its command and fixed arguments between `--forward` and the final `--`, as shown in `README.md`. The lifecycle bridge maps `SessionStart` to idle, `UserPromptSubmit`/`PreToolUse`/`PostToolUse` to working, manually reviewed `PermissionRequest` to waiting, and `Stop` to done. On a permission event, the bridge best-effort reads the matching turn context from the bounded tail of Codex's transcript; an `auto_review` reviewer keeps the pane working, while missing or unreadable context falls back to waiting. `PostToolUse` remains the observable return-to-agent boundary after manual approval. The notification bridge covers `agent-turn-complete`; the detached watcher emits clear when the Codex process exits. Each valid event is written first to a per-server, per-pane journal by `status_store.py`, then published to the normal pipe. Optional normalized event and turn identity keep done terminal within one turn while allowing the next `UserPromptSubmit` to resume working; legacy version-1 records remain valid. The bridge can also return one bounded version-1 server snapshot for plugin recovery. All persistence and publication are best-effort and return success when outside Zellij or when unavailable.
 
 The `[tui]` settings use a separate native path. A newly started Codex TUI emits BEL for completed turns and approval requests. Use `always` because switching Zellij panes or tabs does not reliably satisfy Codex's terminal-level `unfocused` condition. Zellij flashes an active tab or retains `has_bell_notification` for an inactive tab, and the sidebar shows `` on that retained tab until acknowledgement. Existing Codex processes do not reread this configuration. Bell persistence is tab-scoped in Zellij's plugin API; pane children continue to show their exact lifecycle badges.
 
@@ -91,7 +91,7 @@ Run `mise run test`; its Rust tests are colocated in `src/main.rs` and currently
 - compact zero/one-pane tabs and expanded multi-pane children;
 - focused tiled/floating child selection and empty-title fallback;
 - exact tab versus pane row targets;
-- payload validation, timestamps, pane reuse, clear tombstones, cleanup, peer discovery, snapshots, server-scoped cache recovery, corrupt/oversized cache filtering, and stale-recovery rejection;
+- payload validation, timestamps, pane reuse, clear tombstones, approval recovery, turn-terminal completion, cleanup, peer discovery, snapshots, server-scoped cache recovery, corrupt/oversized cache filtering, and stale-recovery rejection;
 - exact-record focus-edge acknowledgement, cached-focus race prevention, cross-instance focus observations, attached-client versus plugin-local tab focus, newer-status invalidation, acknowledgement-before-status ordering, and snapshot recovery;
 - cell-aware truncation, wide characters, ellipsis, index-free labels and overflow leads, native chrome budgets and hierarchy levels, badge preservation, one-cell inset, and theme styling.
 
@@ -99,7 +99,7 @@ Keep runtime host calls out of these tests unless a proper mock layer is introdu
 
 ### Python bridge tests
 
-`mise run test` also runs `python3 -m unittest discover -s hooks/codex -p 'test_*.py'`. Its coverage includes lifecycle mapping, notification payload fields, forwarding syntax, process cleanup, journal ordering/locking, matching-session clear, malformed record filtering, and snapshot isolation.
+`mise run test` also runs `python3 -m unittest discover -s hooks/codex -p 'test_*.py'`. Its coverage includes lifecycle mapping, post-approval recovery, turn-aware terminal completion, notification payload fields, forwarding syntax, process cleanup, journal ordering/locking, matching-session clear, malformed record filtering, and snapshot isolation.
 
 ### WASM and specification checks
 
@@ -132,6 +132,7 @@ Unset the Zellij variables so the process does not think it is nested. The input
 10. wheel overflow and keyboard tab switching operate on the same flattened hierarchy, with `▲`/`▼` marking hidden rows.
 11. after recording done and its focus acknowledgement, detach and reattach the same live Zellij server; the restored visible state remains idle rather than reverting to done or disappearing;
 12. while detached, emit working, waiting, done, and a matching-session clear through the installed bridge, then reattach and verify the newest journal event wins; repeat with another Zellij server using the same pane number and verify no state leaks across servers.
+13. trigger a request that automatic review approves; verify its permission event remains working, a manually reviewed request displays waiting, and a delayed same-turn tool event cannot replace done.
 
 ## Runbook
 
@@ -142,6 +143,7 @@ Unset the Zellij variables so the process does not think it is nested. The input
 - For a missing Codex badge, confirm the global hooks are installed/merged and the process has `ZELLIJ_PANE_ID`. A newly launched Codex TUI may not emit idle until hooks initialize on the first prompt.
 - If only a newly created tab lacks existing statuses, inspect peer discovery/snapshot handling rather than reintroducing tab-level aggregation.
 - If status is present before detach but absent after reattach or hot reload, confirm `status_store.py` is installed beside both bridge scripts, inspect `${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab/sessions/<zellij-pid>/`, and distinguish the same live server from a newly started server. Existing Codex sessions populate the journal only on their next lifecycle event.
+- If an automatically reviewed request shows waiting, confirm its transcript contains a matching `turn_context` with `approvals_reviewer` set to `auto_review`, the installed `agent_status.py` matches this repository, and the hook is trusted in Codex `/hooks`. Missing or unreadable reviewer context intentionally falls back to waiting.
 
 ### Wrong row or pane activates
 
