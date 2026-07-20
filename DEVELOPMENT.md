@@ -79,12 +79,24 @@ not reconstruct pane geometry.
 6. Perform fresh-session verification for changes involving layout,
    permissions, plugin lifecycle, the Zellij ABI, or selectability. Hot reload
    is insufficient for those paths.
-7. After the behavior is accepted, sync delta specs into `openspec/specs/`,
-   archive the completed change, and rerun `mise run check`.
-8. Update source documentation. Run `mise run docs` only after code and specs
+7. After the behavior is accepted, archive the completed OpenSpec change on
+   the feature branch. Archiving syncs its delta into `openspec/specs/` and
+   moves the proposal, design, tasks, and evidence under
+   `openspec/changes/archive/`:
+
+   ```sh
+   openspec archive <change-name> -y
+   ```
+
+   A user-visible change is not ready to merge while its completed OpenSpec
+   directory remains active under `openspec/changes/<change-name>/`.
+8. Rerun `mise run check` after archiving so the merged baseline and archived
+   artifacts are validated together.
+9. Update source documentation. Run `mise run docs` only after code and specs
    have stabilized, then review generated OpenWiki changes.
-9. Commit a scoped branch, open a PR, merge it, and return the checkout to a
-   clean, synchronized `main`.
+10. Commit the baseline-spec update, archived change, and generated docs on the
+    same feature branch; push or update the PR, merge it, and return the
+    checkout to a clean, synchronized `main`.
 
 ## Verification by change type
 
