@@ -23,6 +23,7 @@ A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertical
 - Multiple panes in one tab show their Codex state independently on each pane row without an agent-name prefix
 - Answer-ready and approval events use Zellij's native visual bell and retain an orange `` attention icon on an inactive owning tab until Zellij acknowledges it
 - Returning to a pane whose current Codex state is `done` acknowledges that exact result and presents it as idle without rewriting the lifecycle record
+- Agent lifecycle and acknowledgement state recovers across client detach, session switching, reattach, and plugin hot reload while the same Zellij server remains alive
 
 ## Requirements
 
@@ -46,7 +47,7 @@ mise run release
 mise run dev
 ```
 
-On first load zellij asks for the plugin's permissions (`ReadApplicationState` to see tabs, `ChangeApplicationState` to switch them, `ReadCliPipes` to receive agent status, and `MessageAndLaunchOtherPlugins` to synchronize the sidebar instances created for separate tabs). Approve with `y` — the choice is cached afterwards.
+On first load zellij asks for the plugin's permissions (`ReadApplicationState` to see tabs, `ChangeApplicationState` to switch them, `ReadCliPipes` to receive agent status, `MessageAndLaunchOtherPlugins` to synchronize the sidebar instances created for separate tabs, and `RunCommands` to recover lifecycle events emitted while detached). Approve with `y` — the choice is cached afterwards.
 
 ## Codex agent status
 
@@ -56,6 +57,7 @@ The repository includes a dependency-free Python bridge and user-level hook temp
 mkdir -p ~/.codex/hooks
 install -m 755 hooks/codex/agent_status.py ~/.codex/hooks/agent_status.py
 install -m 755 hooks/codex/agent_notify.py ~/.codex/hooks/agent_notify.py
+install -m 644 hooks/codex/status_store.py ~/.codex/hooks/status_store.py
 install -m 644 hooks/codex/hooks.json ~/.codex/hooks.json
 ```
 
@@ -76,7 +78,9 @@ If you already have a notifier, preserve it by forwarding the original command a
 notify = ["/usr/bin/python3", "/Users/you/.codex/hooks/agent_notify.py", "--forward", "/path/to/existing-notifier", "existing-arg", "--"]
 ```
 
-Codex runs the lifecycle bridge at session, prompt, pre-tool, permission, and stop boundaries. The external notifier covers completion paths such as code review that can omit `Stop`. Inside Zellij, both bridges publish a small versioned JSON message to the plugin; outside Zellij they exit successfully without changing status. Because Codex has no session-exit hook, the session-start handler also launches a detached watcher that clears the badge when that Codex process exits.
+Codex runs the lifecycle bridge at session, prompt, pre-tool, permission, and stop boundaries. The external notifier covers completion paths such as code review that can omit `Stop`. Inside Zellij, both bridges first write a server- and pane-scoped host journal, then publish a small versioned JSON message to the plugin. Because Codex has no session-exit hook, the session-start handler also launches a detached watcher that journals and publishes `clear` when that Codex process exits. Outside Zellij, the bridges exit successfully without changing status.
+
+Each sidebar instance also saves lifecycle records and exact focus acknowledgements in Zellij's plugin cache. When a sidebar runtime starts again, it restores that cache immediately and requests one host-journal snapshot to reconcile events that occurred while no client was attached. Newer timestamps win through the normal status rules, so detached `working`, `waiting`, `done`, and `clear` events replace stale cached state without overwriting a newer live update. Recovery is best-effort: denied `RunCommands` permission, a missing helper, or corrupt cache/journal data leaves normal live pipes and peer synchronization working. Existing sessions begin durable host journaling at their next lifecycle event. State is isolated by the live Zellij server process and does not resurrect after that server exits and a different server starts.
 
 The TUI notification settings are independent of the external `notify` bridge: when a Codex turn completes or needs approval, Codex emits BEL. `always` is required because switching Zellij panes or tabs does not make Codex's terminal-focus detector report `unfocused` in every terminal setup. Zellij flashes an active tab or retains native bell state for an inactive tab, and the sidebar shows `` on a retained tab until Zellij clears it. Start a new Codex session after changing `config.toml`. Zellij exposes retained bell ownership per tab, so a multi-pane tab keeps the bell on its parent row while each pane child keeps its exact Codex status.
 
@@ -98,7 +102,7 @@ Badge colors come from the active Zellij theme: idle is dimmed, working uses cya
 
 Returning to a completed pane in a tab viewed by an attached Zellij client acknowledges its current `done` record and changes the visible badge from `` to idle ``. A completion that arrives while its pane remains focused stays `done` until the user leaves and returns. The plugin acknowledges only a confirmed focus transition, rather than status arrival against potentially stale tab metadata, so an unseen tab cannot turn idle during a tab-switch race. Because every tab owns a separate sidebar instance, changed client-viewed pane sets are shared between peers so leaving through one tab and returning through another forms one session-wide focus history. The acknowledgement is tied to that record's Codex session ID and timestamp, so a newer lifecycle event immediately replaces the idle presentation. `working` and `waiting` are never acknowledged by focus. Status acknowledgement remains separate from Zellij's native bell state and clearing behavior.
 
-Closing a pane or exiting Codex clears its status, and starting a new Codex session in a reused pane replaces the old session. Codex initializes lifecycle hooks lazily, so a newly opened TUI may not show `` until its first prompt is submitted. Exit cleanup is best-effort if the bridge cannot identify the Codex ancestor process; closing the pane still clears the record.
+Closing a pane or exiting Codex clears its status, and starting a new Codex session in a reused pane replaces the old session. Codex initializes lifecycle hooks lazily, so a newly opened TUI may not show `` until its first prompt is submitted. Exit cleanup and detached recovery are best-effort if the bridge cannot identify the Zellij server ancestor; closing the pane still clears the plugin record after a client is attached.
 
 ## Install for everyday use
 

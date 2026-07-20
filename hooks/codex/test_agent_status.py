@@ -48,14 +48,16 @@ class AgentStatusHookTests(unittest.TestCase):
                 AGENT_STATUS, "process_is_running", side_effect=[True, False]
             ),
             patch.object(AGENT_STATUS.time, "sleep") as sleep,
+            patch.object(AGENT_STATUS, "persist_payload") as persist,
             patch.object(AGENT_STATUS, "publish_payload") as publish,
         ):
-            AGENT_STATUS.watch_process(42, "7", "session")
+            AGENT_STATUS.watch_process(42, "7", "session", 123)
         sleep.assert_called_once_with(0.5)
         payload = publish.call_args.args[0]
         self.assertEqual(payload["pane_id"], "7")
         self.assertEqual(payload["session_id"], "session")
         self.assertEqual(payload["state"], "clear")
+        persist.assert_called_once_with(payload, 123)
 
 
 if __name__ == "__main__":
