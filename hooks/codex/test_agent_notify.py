@@ -45,6 +45,20 @@ class AgentNotifyTests(unittest.TestCase):
             run.call_args.args[0], ["/notifier", "turn-ended", "payload"]
         )
 
+    def test_main_persists_done_before_publication(self):
+        raw = json.dumps({"type": "agent-turn-complete", "thread-id": "thread"})
+        with (
+            patch.object(AGENT_NOTIFY.sys, "argv", ["agent_notify.py", raw]),
+            patch.dict(AGENT_NOTIFY.os.environ, {"ZELLIJ_PANE_ID": "7"}),
+            patch.object(AGENT_NOTIFY, "find_zellij_ancestor", return_value=123),
+            patch.object(AGENT_NOTIFY, "persist_payload") as persist,
+            patch.object(AGENT_NOTIFY, "publish_payload") as publish,
+        ):
+            self.assertEqual(AGENT_NOTIFY.main(), 0)
+        self.assertEqual(persist.call_args.args[0]["state"], "done")
+        self.assertEqual(persist.call_args.args[1], 123)
+        self.assertEqual(publish.call_args.args[0], persist.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

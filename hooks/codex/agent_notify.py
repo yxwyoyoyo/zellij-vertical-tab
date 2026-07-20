@@ -10,6 +10,16 @@ import sys
 import time
 from typing import Any
 
+try:
+    from status_store import apply_payload as persist_payload
+    from status_store import find_zellij_ancestor
+except ImportError:
+    def persist_payload(_payload: object, _zellij_pid: int) -> bool:
+        return False
+
+    def find_zellij_ancestor(_start_pid: int | None = None) -> int | None:
+        return None
+
 
 PIPE_NAME = "vertical-tab-agent-status"
 PROTOCOL_VERSION = 1
@@ -94,6 +104,9 @@ def main() -> int:
     if pane_id:
         payload = build_done_payload(raw_notification, pane_id)
         if payload is not None:
+            zellij_pid = find_zellij_ancestor()
+            if zellij_pid is not None:
+                persist_payload(payload, zellij_pid)
             publish_payload(payload)
     forward_notification(forward_command, raw_notification)
     return 0

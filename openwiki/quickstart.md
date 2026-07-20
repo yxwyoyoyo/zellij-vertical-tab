@@ -1,7 +1,7 @@
 ---
 type: Repository Guide
 title: zellij-vertical-tab Quickstart
-description: Entry point for the pane-aware zellij-vertical-tab Rust/WASM plugin, including its native nested-list hierarchy, per-pane Codex status, native bell attention, mouse-resizable layout, source map, and maintainer workflows.
+description: Entry point for the pane-aware zellij-vertical-tab Rust/WASM plugin, including native nested-list hierarchy, recoverable per-pane Codex status, native bell attention, mouse-resizable layout, source map, and maintainer workflows.
 resource: README.md
 tags: [zellij, rust, wasm, codex, quickstart]
 ---
@@ -28,13 +28,14 @@ mise run test  # Rust host tests + Python bridge tests
 mise run dev   # build debug WASM and launch zellij.kdl
 ```
 
-The development layout loads `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm` into a flexible pane that starts at **13%** of the terminal width. With normal Zellij mouse handling, start a fresh session and drag the tiled boundary between the sidebar and content to resize the sidebar. Pane frames are optional: showing them makes the boundary visible, while hiding them leaves the same one-cell drag target. Zellij owns that width per tab: it is not persisted or synchronized, and each new tab starts again at 13%. On first use, approve `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, and `MessageAndLaunchOtherPlugins`; the last two support Codex messages and synchronization among the sidebar instance created in each tab. See [the layout architecture](architecture.md#runtime-and-layout-constraints) and [fresh-session verification](development.md#runtime-verification) for the boundary and checks.
+The development layout loads `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm` into a flexible pane that starts at **13%** of the terminal width. With normal Zellij mouse handling, start a fresh session and drag the tiled boundary between the sidebar and content to resize the sidebar. Pane frames are optional: showing them makes the boundary visible, while hiding them leaves the same one-cell drag target. Zellij owns that width per tab: it is not persisted or synchronized, and each new tab starts again at 13%. On first use, approve `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, `MessageAndLaunchOtherPlugins`, and `RunCommands`; the last three support Codex messages, sidebar-instance synchronization, and detached-event recovery. See [the layout architecture](architecture.md#runtime-and-layout-constraints) and [fresh-session verification](development.md#runtime-verification) for the boundary and checks.
 
 ## User-visible contract
 
 - **Adaptive native hierarchy:** every tab contributes a top-level `>` list item, used as the sole leading marker without repeating the tab number. More than one terminal pane adds one indented `-` child item per terminal pane; zero or one does not. Children are ordered tiled, floating, then suppressed, with each layer ordered by `y`, `x`, and pane ID.
 - **Status ownership:** status is keyed by terminal pane ID. A one-pane tab shows its pane's glyph on the compact tab row. A multi-pane tab shows each glyph only on its owning pane child; the parent has no aggregate glyph or pane count.
 - **Focus acknowledgement:** returning to a completed pane in a tab viewed by an attached Zellij client presents its exact current `done` record as idle across sidebar instances. Completion while focus remains unchanged stays `done`; plugin initialization, plugin-local focus in unseen tabs, newer lifecycle records, working, waiting, and native bell state remain independent.
+- **Durable recovery:** server-scoped plugin cache snapshots preserve lifecycle records and exact acknowledgements across detach, session switching, reattach, and hot reload. A host journal reconciles lifecycle and exit events emitted while detached; recovery never restores a focus baseline, and it does not cross into a different Zellij server process.
 - **Native attention:** Codex completion and approval events emit BEL. Zellij retains attention for inactive tabs, so `` appears on that tab's row until acknowledgement while pane lifecycle status remains exact.
 - **Selection:** the active tab and the focused child of the active multi-pane tab use Zellij's native selected-list palette across the fitted row; all other rows use the native unselected-list palette.
 - **Exact clicks:** a valid tab-row click calls `switch_tab_to(position + 1)`; a pane-row click calls `focus_terminal_pane(id, false, false)`, allowing Zellij to switch tab/layer and focus that exact terminal pane. Clicks outside rendered rows do nothing.
@@ -59,7 +60,7 @@ See [architecture constraints](architecture.md#runtime-and-layout-constraints) f
 | Path | Role | Start here when… |
 | --- | --- | --- |
 | `src/main.rs` | Plugin state, Zellij lifecycle, adaptive rows, status synchronization, formatting, input, and Rust unit tests | Changing runtime or UI behavior |
-| `hooks/codex/` | Dependency-free lifecycle/completion bridges, hook template, and Python tests | Changing Codex publication or installation |
+| `hooks/codex/` | Dependency-free lifecycle/completion bridges, durable host journal, hook template, and Python tests | Changing Codex publication, recovery, or installation |
 | `openspec/specs/` | Current behavior contracts for the sidebar and agent status | Checking intended product behavior |
 | `openspec/changes/archive/` | Archived proposals, designs, deltas, and completion evidence | Understanding why status, badges, ellipsis, or pane hierarchy changed |
 | `zellij.kdl` | Development template with 13% flexible sidebar, sibling content pane, and status bar | Changing layout or launching locally |
@@ -72,7 +73,7 @@ See [architecture constraints](architecture.md#runtime-and-layout-constraints) f
 
 ## Repository progression
 
-Git history shows the initial vertical list followed by four specification-driven increments on 2026-07-17: per-pane Codex lifecycle status, theme-aligned status glyphs, cell-aware name ellipsis, and finally pane-aware rows in merged commit `0186450`. Each completed change was moved under `openspec/changes/archive/`, while its resulting contract was merged into `openspec/specs/`. The latest change intentionally replaced lossy multi-pane aggregation with exact pane ownership while preserving the existing wire protocol and cross-sidebar synchronization.
+Git history shows the initial vertical list followed by specification-driven increments for per-pane Codex lifecycle status, theme-aligned glyphs, cell-aware ellipsis, pane-aware rows, native bell attention, exact focus acknowledgement, and same-server cache/journal recovery. Completed changes move under `openspec/changes/archive/`, while their resulting contracts merge into `openspec/specs/`. The persistence change preserves the existing wire protocol, timestamp rules, exact pane ownership, and cross-sidebar synchronization (`openspec/changes/archive/2026-07-20-persist-agent-status-across-reattach/`).
 
 ## Documentation map
 

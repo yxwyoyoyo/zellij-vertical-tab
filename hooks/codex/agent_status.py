@@ -16,6 +16,24 @@ import sys
 import time
 from typing import Any
 
+try:
+    from status_store import apply_payload as persist_payload
+    from status_store import find_zellij_ancestor
+    from status_store import parse_positive_pid
+    from status_store import snapshot_json
+except ImportError:
+    def persist_payload(_payload: object, _zellij_pid: int) -> bool:
+        return False
+
+    def find_zellij_ancestor(_start_pid: int | None = None) -> int | None:
+        return None
+
+    def parse_positive_pid(_value: object) -> int | None:
+        return None
+
+    def snapshot_json(_zellij_pid: int) -> str | None:
+        return None
+
 
 PIPE_NAME = "vertical-tab-agent-status"
 PROTOCOL_VERSION = 1
@@ -117,23 +135,33 @@ def process_is_running(pid: int) -> bool:
         return False
 
 
-def watch_process(pid: int, pane_id: str, session_id: str) -> None:
+def watch_process(
+    pid: int, pane_id: str, session_id: str, zellij_pid: int | None = None
+) -> None:
     while process_is_running(pid):
         time.sleep(0.5)
-    publish_payload(build_clear_payload(pane_id, session_id))
+    payload = build_clear_payload(pane_id, session_id)
+    if zellij_pid is not None:
+        persist_payload(payload, zellij_pid)
+    publish_payload(payload)
 
 
-def start_exit_watcher(pid: int, pane_id: str, session_id: str) -> None:
+def start_exit_watcher(
+    pid: int, pane_id: str, session_id: str, zellij_pid: int | None = None
+) -> None:
+    arguments = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--watch",
+        str(pid),
+        pane_id,
+        session_id,
+    ]
+    if zellij_pid is not None:
+        arguments.append(str(zellij_pid))
     try:
         subprocess.Popen(
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--watch",
-                str(pid),
-                pane_id,
-                session_id,
-            ],
+            arguments,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -145,12 +173,21 @@ def start_exit_watcher(pid: int, pane_id: str, session_id: str) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) == 5 and sys.argv[1] == "--watch":
+    if len(sys.argv) in {5, 6} and sys.argv[1] == "--watch":
         try:
             watched_pid = int(sys.argv[2])
         except ValueError:
             return 0
-        watch_process(watched_pid, sys.argv[3], sys.argv[4])
+        zellij_pid = parse_positive_pid(sys.argv[5]) if len(sys.argv) == 6 else None
+        watch_process(watched_pid, sys.argv[3], sys.argv[4], zellij_pid)
+        return 0
+
+    if len(sys.argv) == 3 and sys.argv[1] == "--snapshot":
+        zellij_pid = parse_positive_pid(sys.argv[2])
+        if zellij_pid is not None:
+            snapshot = snapshot_json(zellij_pid)
+            if snapshot is not None:
+                print(snapshot)
         return 0
 
     pane_id = os.environ.get("ZELLIJ_PANE_ID", "").strip()
@@ -167,11 +204,14 @@ def main() -> int:
     payload = build_payload(hook_input, pane_id)
     if payload is None:
         return 0
+    zellij_pid = find_zellij_ancestor()
+    if zellij_pid is not None:
+        persist_payload(payload, zellij_pid)
     publish_payload(payload)
     if hook_input.get("hook_event_name") == "SessionStart":
         codex_pid = find_codex_ancestor()
         if codex_pid is not None:
-            start_exit_watcher(codex_pid, pane_id, payload["session_id"])
+            start_exit_watcher(codex_pid, pane_id, payload["session_id"], zellij_pid)
     return 0
 
 

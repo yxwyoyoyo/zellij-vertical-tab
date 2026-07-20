@@ -15,6 +15,7 @@
 //! hierarchy bullets plus selected and unselected rows with the user's theme.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthChar;
@@ -28,7 +29,13 @@ const AGENT_STATUS_SYNC_REQUEST: &str = "vertical-tab-agent-status-sync-request"
 const AGENT_STATUS_SYNC_SNAPSHOT: &str = "vertical-tab-agent-status-sync-snapshot";
 const AGENT_STATUS_SYNC_ACKNOWLEDGEMENT: &str = "vertical-tab-agent-status-sync-acknowledgement";
 const AGENT_STATUS_SYNC_FOCUS: &str = "vertical-tab-agent-status-sync-focus";
+const AGENT_STATUS_RESTORE_CONTEXT: &str = "vertical-tab-agent-status-restore-v1";
 const AGENT_STATUS_VERSION: u8 = 1;
+const AGENT_CACHE_PREFIX: &str = "agent-status";
+const AGENT_CACHE_MAX_BYTES: usize = 1024 * 1024;
+const HOST_RESTORE_MAX_BYTES: usize = 1024 * 1024;
+const HOST_RESTORE_SCRIPT: &str =
+    r#"exec "${CODEX_HOME:-$HOME/.codex}/hooks/agent_status.py" --snapshot "$1""#;
 const ROW_RIGHT_PADDING: usize = 1;
 const TAB_LIST_CHROME_WIDTH: usize = 3;
 const PANE_LIST_CHROME_WIDTH: usize = 5;
@@ -240,15 +247,68 @@ struct State {
     focused_terminal_panes: Option<HashSet<u32>>,
     /// This sidebar instance's session-unique Zellij plugin ID.
     plugin_id: Option<u32>,
+    /// Zellij server PID used to isolate durable state between live sessions.
+    zellij_pid: Option<u32>,
     /// Other sidebar plugin instances discovered across the session's tabs.
     peer_plugin_ids: HashSet<u32>,
     /// Whether `set_selectable(false)` has been applied yet.
     unselectable_set: bool,
+    /// Whether this runtime already requested one host-journal snapshot.
+    host_restore_requested: bool,
 }
 
 register_plugin!(State);
 
 impl State {
+    fn persist_agent_cache(&self) {
+        if let (Some(zellij_pid), Some(plugin_id)) = (self.zellij_pid, self.plugin_id) {
+            persist_agent_cache(
+                Path::new("/cache"),
+                zellij_pid,
+                plugin_id,
+                &self.agent_records,
+                &self.agent_acknowledgements,
+            );
+        }
+    }
+
+    fn apply_snapshot_payload(&mut self, payload: &str) -> bool {
+        let changed = apply_agent_snapshot(
+            &mut self.agent_records,
+            &mut self.agent_acknowledgements,
+            payload,
+        );
+        if changed {
+            self.persist_agent_cache();
+        }
+        changed
+    }
+
+    fn request_host_restore(&mut self) {
+        if self.host_restore_requested {
+            return;
+        }
+        let Some(zellij_pid) = self.zellij_pid else {
+            return;
+        };
+        self.host_restore_requested = true;
+        let zellij_pid = zellij_pid.to_string();
+        let context = BTreeMap::from([(
+            "request".to_owned(),
+            AGENT_STATUS_RESTORE_CONTEXT.to_owned(),
+        )]);
+        run_command(
+            &[
+                "/bin/sh",
+                "-c",
+                HOST_RESTORE_SCRIPT,
+                "zellij-vertical-tab",
+                &zellij_pid,
+            ],
+            context,
+        );
+    }
+
     fn sidebar_rows(&self) -> Vec<SidebarRow> {
         build_sidebar_rows(
             &self.tabs,
@@ -286,6 +346,9 @@ impl State {
                     }
                 }
             }
+        }
+        if changed {
+            self.persist_agent_cache();
         }
         changed
     }
@@ -325,23 +388,38 @@ impl State {
                 pane_id,
                 &record,
             );
-        status_changed || acknowledgement_pruned
+        let changed = status_changed || acknowledgement_pruned;
+        if changed {
+            self.persist_agent_cache();
+        }
+        changed
     }
 }
 
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
-        self.plugin_id = Some(get_plugin_ids().plugin_id);
+        let plugin_ids = get_plugin_ids();
+        self.plugin_id = Some(plugin_ids.plugin_id);
+        self.zellij_pid = Some(plugin_ids.zellij_pid);
+        restore_agent_cache(
+            Path::new("/cache"),
+            plugin_ids.zellij_pid,
+            &mut self.agent_records,
+            &mut self.agent_acknowledgements,
+        );
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::ReadCliPipes,
             PermissionType::MessageAndLaunchOtherPlugins,
+            PermissionType::RunCommands,
         ]);
         subscribe(&[
             EventType::TabUpdate,
             EventType::PaneUpdate,
             EventType::Mouse,
+            EventType::PermissionRequestResult,
+            EventType::RunCommandResult,
         ]);
         // NOTE: set_selectable(false) is NOT called here. On zellij 0.44,
         // calling it during initial session startup can kill the client when
@@ -425,11 +503,15 @@ impl ZellijPlugin for State {
                 let peers_changed = peers != self.peer_plugin_ids;
                 self.peer_plugin_ids = peers;
                 let acknowledgement_changed = self.reconcile_focus_transition();
-                records_removed
+                let changed = records_removed
                     || acknowledgements_removed
                     || panes_changed
                     || peers_changed
-                    || acknowledgement_changed
+                    || acknowledgement_changed;
+                if records_removed || acknowledgements_removed {
+                    self.persist_agent_cache();
+                }
+                changed
             }
             Event::Mouse(mouse) => match mouse {
                 Mouse::LeftClick(line, _col) => {
@@ -463,6 +545,21 @@ impl ZellijPlugin for State {
                 }
                 _ => false,
             },
+            Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                self.request_host_restore();
+                false
+            }
+            Event::RunCommandResult(exit_code, stdout, _stderr, context) => {
+                if context.get("request").map(String::as_str) != Some(AGENT_STATUS_RESTORE_CONTEXT)
+                    || exit_code != Some(0)
+                    || stdout.len() > HOST_RESTORE_MAX_BYTES
+                {
+                    return false;
+                }
+                std::str::from_utf8(&stdout)
+                    .ok()
+                    .is_some_and(|payload| self.apply_snapshot_payload(payload.trim()))
+            }
             _ => false,
         }
     }
@@ -499,15 +596,15 @@ impl ZellijPlugin for State {
                 }
                 false
             }
-            AGENT_STATUS_SYNC_SNAPSHOT => apply_agent_snapshot(
-                &mut self.agent_records,
-                &mut self.agent_acknowledgements,
-                payload,
-            ),
+            AGENT_STATUS_SYNC_SNAPSHOT => self.apply_snapshot_payload(payload),
             AGENT_STATUS_SYNC_ACKNOWLEDGEMENT => {
-                parse_agent_acknowledgement(payload).is_some_and(|update| {
+                let changed = parse_agent_acknowledgement(payload).is_some_and(|update| {
                     apply_agent_acknowledgement(&mut self.agent_acknowledgements, update)
-                })
+                });
+                if changed {
+                    self.persist_agent_cache();
+                }
+                changed
             }
             AGENT_STATUS_SYNC_FOCUS => parse_agent_focus(payload)
                 .is_some_and(|focused_panes| self.accept_focus_observation(focused_panes)),
@@ -696,6 +793,79 @@ fn apply_agent_snapshot(
                 apply_agent_acknowledgement(acknowledgements, update) || changed
             })
         })
+}
+
+fn agent_cache_path(cache_dir: &Path, zellij_pid: u32, plugin_id: u32) -> std::path::PathBuf {
+    cache_dir.join(format!(
+        "{AGENT_CACHE_PREFIX}-{zellij_pid}-{plugin_id}.json"
+    ))
+}
+
+fn parse_agent_cache_filename(file_name: &str, zellij_pid: u32) -> Option<u32> {
+    let stem = file_name.strip_suffix(".json")?;
+    let suffix = stem.strip_prefix(&format!("{AGENT_CACHE_PREFIX}-{zellij_pid}-"))?;
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    suffix.parse().ok()
+}
+
+fn persist_agent_cache(
+    cache_dir: &Path,
+    zellij_pid: u32,
+    plugin_id: u32,
+    records: &HashMap<u32, AgentRecord>,
+    acknowledgements: &HashMap<u32, AgentAcknowledgement>,
+) -> bool {
+    let Some(snapshot) = serialize_agent_snapshot(records, acknowledgements) else {
+        return false;
+    };
+    if snapshot.len() > AGENT_CACHE_MAX_BYTES || std::fs::create_dir_all(cache_dir).is_err() {
+        return false;
+    }
+    let destination = agent_cache_path(cache_dir, zellij_pid, plugin_id);
+    let temporary = cache_dir.join(format!(
+        ".{AGENT_CACHE_PREFIX}-{zellij_pid}-{plugin_id}.tmp"
+    ));
+    if std::fs::write(&temporary, snapshot).is_err() {
+        return false;
+    }
+    if std::fs::rename(&temporary, destination).is_err() {
+        let _ = std::fs::remove_file(temporary);
+        return false;
+    }
+    true
+}
+
+fn restore_agent_cache(
+    cache_dir: &Path,
+    zellij_pid: u32,
+    records: &mut HashMap<u32, AgentRecord>,
+    acknowledgements: &mut HashMap<u32, AgentAcknowledgement>,
+) -> bool {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else {
+        return false;
+    };
+    let mut paths = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_str()?;
+            parse_agent_cache_filename(file_name, zellij_pid)?;
+            Some(entry.path())
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+
+    paths.into_iter().fold(false, |changed, path| {
+        let payload = std::fs::metadata(&path)
+            .ok()
+            .filter(|metadata| metadata.is_file() && metadata.len() <= AGENT_CACHE_MAX_BYTES as u64)
+            .and_then(|_| std::fs::read_to_string(path).ok());
+        payload.map_or(changed, |payload| {
+            apply_agent_snapshot(records, acknowledgements, &payload) || changed
+        })
+    })
 }
 
 fn send_plugin_message(destination_plugin_id: u32, name: &str, payload: String) {
@@ -1236,6 +1406,19 @@ fn fit_to_width(s: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEMP_DIRECTORY_ID: AtomicUsize = AtomicUsize::new(0);
+
+    fn temp_directory(label: &str) -> std::path::PathBuf {
+        let id = TEMP_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "zellij-vertical-tab-{label}-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     fn tab(position: usize, name: &str, active: bool) -> TabInfo {
         TabInfo {
@@ -2234,6 +2417,125 @@ mod tests {
             renderable_agent_state(&records, &acknowledgements, 9),
             Some(AgentState::Idle)
         );
+    }
+
+    #[test]
+    fn cache_round_trip_restores_status_and_acknowledgement() {
+        let cache_dir = temp_directory("cache-round-trip");
+        let records = HashMap::from([(
+            7,
+            AgentRecord {
+                session_id: "completed".to_owned(),
+                state: AgentState::Done,
+                updated_at_ms: 42,
+            },
+        )]);
+        let acknowledgements = HashMap::from([(7, acknowledgement("completed", 42))]);
+
+        assert!(persist_agent_cache(
+            &cache_dir,
+            100,
+            9,
+            &records,
+            &acknowledgements
+        ));
+        let mut restored_records = HashMap::new();
+        let mut restored_acknowledgements = HashMap::new();
+        assert!(restore_agent_cache(
+            &cache_dir,
+            100,
+            &mut restored_records,
+            &mut restored_acknowledgements
+        ));
+        assert_eq!(restored_records, records);
+        assert_eq!(restored_acknowledgements, acknowledgements);
+
+        std::fs::remove_dir_all(cache_dir).unwrap();
+    }
+
+    #[test]
+    fn cache_restore_is_server_scoped_and_skips_invalid_entries() {
+        let cache_dir = temp_directory("cache-filtering");
+        let records = HashMap::from([(1, agent_record(AgentState::Working))]);
+        assert!(persist_agent_cache(
+            &cache_dir,
+            200,
+            1,
+            &records,
+            &HashMap::new()
+        ));
+        assert!(persist_agent_cache(
+            &cache_dir,
+            201,
+            2,
+            &HashMap::from([(2, agent_record(AgentState::Waiting))]),
+            &HashMap::new()
+        ));
+        std::fs::write(cache_dir.join("agent-status-200-not-a-number.json"), "{}").unwrap();
+        std::fs::write(cache_dir.join("agent-status-200-3.json"), "not-json").unwrap();
+        let oversized = std::fs::File::create(cache_dir.join("agent-status-200-4.json")).unwrap();
+        oversized.set_len(AGENT_CACHE_MAX_BYTES as u64 + 1).unwrap();
+
+        let mut restored_records = HashMap::new();
+        let mut restored_acknowledgements = HashMap::new();
+        assert!(restore_agent_cache(
+            &cache_dir,
+            200,
+            &mut restored_records,
+            &mut restored_acknowledgements
+        ));
+        assert_eq!(restored_records, records);
+        assert!(restored_acknowledgements.is_empty());
+
+        std::fs::remove_dir_all(cache_dir).unwrap();
+    }
+
+    #[test]
+    fn host_snapshot_clear_reconciles_cache_without_overwriting_newer_live_state() {
+        let mut records = HashMap::from([(
+            5,
+            AgentRecord {
+                session_id: "session".to_owned(),
+                state: AgentState::Done,
+                updated_at_ms: 10,
+            },
+        )]);
+        let mut acknowledgements = HashMap::from([(5, acknowledgement("session", 10))]);
+        let clear = serialize_agent_snapshot(
+            &HashMap::from([(
+                5,
+                AgentRecord {
+                    session_id: "session".to_owned(),
+                    state: AgentState::Clear,
+                    updated_at_ms: 20,
+                },
+            )]),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(apply_agent_snapshot(
+            &mut records,
+            &mut acknowledgements,
+            &clear
+        ));
+        assert_eq!(records[&5].state, AgentState::Clear);
+        assert!(acknowledgements.is_empty());
+
+        records.insert(
+            5,
+            AgentRecord {
+                session_id: "next".to_owned(),
+                state: AgentState::Working,
+                updated_at_ms: 30,
+            },
+        );
+        assert!(!apply_agent_snapshot(
+            &mut records,
+            &mut acknowledgements,
+            &clear
+        ));
+        assert_eq!(records[&5].session_id, "next");
+        assert_eq!(records[&5].state, AgentState::Working);
     }
 
     #[test]
