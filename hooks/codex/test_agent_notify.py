@@ -20,6 +20,20 @@ class AgentNotifyTests(unittest.TestCase):
         self.assertEqual(payload["pane_id"], "7")
         self.assertEqual(payload["session_id"], "thread")
         self.assertEqual(payload["state"], "done")
+        self.assertEqual(payload["event"], "agent_turn_complete")
+
+    def test_preserves_notification_turn_identity_when_available(self):
+        payload = AGENT_NOTIFY.build_done_payload(
+            json.dumps(
+                {
+                    "type": "agent-turn-complete",
+                    "thread-id": "thread",
+                    "turn-id": "turn-1",
+                }
+            ),
+            "7",
+        )
+        self.assertEqual(payload["turn_id"], "turn-1")
 
     def test_ignores_other_or_invalid_notifications(self):
         self.assertIsNone(AGENT_NOTIFY.build_done_payload("not-json", "7"))
