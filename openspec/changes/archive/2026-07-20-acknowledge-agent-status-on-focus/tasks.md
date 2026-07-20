@@ -24,4 +24,4 @@
 - [x] 4.3 Update README source documentation and regenerate OpenWiki pages to describe focus acknowledgement and its separation from native bell state
 - [x] 4.4 Run `mise run check`, strict OpenSpec validation, and `git diff --check`
 - [x] 4.5 Build, install, and hot-reload the release plugin in `Hub`
-- [ ] 4.6 Interactively verify keyboard focus, tab switching, pane-row clicks, completion while focused, and completion while unfocused
+- [x] 4.6 Interactively verify keyboard focus, tab switching, pane-row clicks, completion while focused, and completion while unfocused
