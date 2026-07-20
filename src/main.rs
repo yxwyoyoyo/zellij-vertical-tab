@@ -26,6 +26,8 @@ const AGENT_STATUS_PIPE: &str = "vertical-tab-agent-status";
 const AGENT_STATUS_SYNC_UPDATE: &str = "vertical-tab-agent-status-sync-update";
 const AGENT_STATUS_SYNC_REQUEST: &str = "vertical-tab-agent-status-sync-request";
 const AGENT_STATUS_SYNC_SNAPSHOT: &str = "vertical-tab-agent-status-sync-snapshot";
+const AGENT_STATUS_SYNC_ACKNOWLEDGEMENT: &str = "vertical-tab-agent-status-sync-acknowledgement";
+const AGENT_STATUS_SYNC_FOCUS: &str = "vertical-tab-agent-status-sync-focus";
 const AGENT_STATUS_VERSION: u8 = 1;
 const ROW_RIGHT_PADDING: usize = 1;
 const TAB_LIST_CHROME_WIDTH: usize = 3;
@@ -88,6 +90,8 @@ struct AgentStatusPayload {
 struct AgentStatusSnapshot {
     version: u8,
     records: Vec<AgentStatusPayload>,
+    #[serde(default)]
+    acknowledgements: Vec<AgentAcknowledgementPayload>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +105,32 @@ struct AgentRecord {
 struct AgentStatusUpdate {
     pane_id: u32,
     record: AgentRecord,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct AgentAcknowledgementPayload {
+    version: u8,
+    pane_id: String,
+    session_id: String,
+    updated_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentAcknowledgement {
+    session_id: String,
+    updated_at_ms: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AgentAcknowledgementUpdate {
+    pane_id: u32,
+    acknowledgement: AgentAcknowledgement,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct AgentFocusPayload {
+    version: u8,
+    pane_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -204,6 +234,10 @@ struct State {
     terminal_panes: HashMap<usize, Vec<TerminalPane>>,
     /// Most recent top-level Codex session status for each terminal pane.
     agent_records: HashMap<u32, AgentRecord>,
+    /// Exact completed lifecycle records acknowledged through terminal focus.
+    agent_acknowledgements: HashMap<u32, AgentAcknowledgement>,
+    /// Terminal panes viewed by attached clients at the last complete focus observation.
+    focused_terminal_panes: Option<HashSet<u32>>,
     /// This sidebar instance's session-unique Zellij plugin ID.
     plugin_id: Option<u32>,
     /// Other sidebar plugin instances discovered across the session's tabs.
@@ -213,6 +247,87 @@ struct State {
 }
 
 register_plugin!(State);
+
+impl State {
+    fn sidebar_rows(&self) -> Vec<SidebarRow> {
+        build_sidebar_rows(
+            &self.tabs,
+            &self.terminal_panes,
+            &self.agent_records,
+            &self.agent_acknowledgements,
+        )
+    }
+
+    fn accept_focus_observation(&mut self, focused_panes: HashSet<u32>) -> bool {
+        let Some(previous_focused_panes) =
+            self.focused_terminal_panes.replace(focused_panes.clone())
+        else {
+            return false;
+        };
+        let updates = newly_focused_done_acknowledgements(
+            &previous_focused_panes,
+            &focused_panes,
+            &self.agent_records,
+        );
+        let mut changed = false;
+        for update in updates {
+            let pane_id = update.pane_id;
+            if apply_agent_acknowledgement(&mut self.agent_acknowledgements, update) {
+                changed = true;
+                if let Some(payload) =
+                    serialize_agent_acknowledgement(pane_id, &self.agent_acknowledgements[&pane_id])
+                {
+                    for peer_id in &self.peer_plugin_ids {
+                        send_plugin_message(
+                            *peer_id,
+                            AGENT_STATUS_SYNC_ACKNOWLEDGEMENT,
+                            payload.clone(),
+                        );
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    fn reconcile_focus_transition(&mut self) -> bool {
+        // TabUpdate and PaneUpdate can initialize in either order. Establish a
+        // baseline only after both halves of the focus view are available so
+        // plugin startup or hot reload is not mistaken for a user transition.
+        if self.tabs.is_empty() || self.terminal_panes.is_empty() {
+            return false;
+        }
+
+        let focused_panes: HashSet<u32> =
+            focused_terminal_pane_ids(&self.tabs, &self.terminal_panes)
+                .into_iter()
+                .collect();
+        if self.focused_terminal_panes.as_ref() == Some(&focused_panes) {
+            return false;
+        }
+        let payload = serialize_agent_focus(&focused_panes);
+        let acknowledgement_changed = self.accept_focus_observation(focused_panes);
+        if let Some(payload) = payload {
+            for peer_id in &self.peer_plugin_ids {
+                send_plugin_message(*peer_id, AGENT_STATUS_SYNC_FOCUS, payload.clone());
+            }
+        }
+        acknowledgement_changed
+    }
+
+    fn accept_agent_status(&mut self, update: AgentStatusUpdate) -> bool {
+        let pane_id = update.pane_id;
+        let record = update.record.clone();
+        let status_changed = apply_agent_status(&mut self.agent_records, update);
+        let acknowledgement_pruned = status_changed
+            && prune_superseded_agent_acknowledgement(
+                &mut self.agent_acknowledgements,
+                pane_id,
+                &record,
+            );
+        status_changed || acknowledgement_pruned
+    }
+}
 
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
@@ -250,8 +365,7 @@ impl ZellijPlugin for State {
                 }
                 let new_active = tabs.iter().position(|t| t.active);
                 self.tabs = tabs;
-                let sidebar_rows =
-                    build_sidebar_rows(&self.tabs, &self.terminal_panes, &self.agent_records);
+                let sidebar_rows = self.sidebar_rows();
                 let active_row = active_tab_row(&sidebar_rows);
                 if new_active != self.active_idx {
                     // The user switched tabs outside the plugin (keybindings,
@@ -267,6 +381,7 @@ impl ZellijPlugin for State {
                     self.scroll_offset =
                         clamp_offset(sidebar_rows.len(), self.scroll_offset, self.rows);
                 }
+                self.reconcile_focus_transition();
                 true
             }
             Event::PaneUpdate(pane_manifest) => {
@@ -274,12 +389,15 @@ impl ZellijPlugin for State {
                 let terminal_panes = terminal_panes_by_tab(&pane_manifest);
                 let records_removed =
                     remove_missing_agent_records(&mut self.agent_records, &pane_tabs);
+                let acknowledgements_removed = remove_missing_agent_acknowledgements(
+                    &mut self.agent_acknowledgements,
+                    &pane_tabs,
+                );
                 let panes_changed =
                     pane_tabs != self.pane_tabs || terminal_panes != self.terminal_panes;
                 self.pane_tabs = pane_tabs;
                 self.terminal_panes = terminal_panes;
-                let sidebar_rows =
-                    build_sidebar_rows(&self.tabs, &self.terminal_panes, &self.agent_records);
+                let sidebar_rows = self.sidebar_rows();
                 self.scroll_offset = visible_window(
                     sidebar_rows.len(),
                     active_tab_row(&sidebar_rows),
@@ -298,10 +416,20 @@ impl ZellijPlugin for State {
                             plugin_id.to_string(),
                         );
                     }
+                    if let Some(focused_panes) = self.focused_terminal_panes.as_ref() {
+                        if let Some(payload) = serialize_agent_focus(focused_panes) {
+                            send_plugin_message(*peer_id, AGENT_STATUS_SYNC_FOCUS, payload);
+                        }
+                    }
                 }
                 let peers_changed = peers != self.peer_plugin_ids;
                 self.peer_plugin_ids = peers;
-                records_removed || panes_changed || peers_changed
+                let acknowledgement_changed = self.reconcile_focus_transition();
+                records_removed
+                    || acknowledgements_removed
+                    || panes_changed
+                    || peers_changed
+                    || acknowledgement_changed
             }
             Event::Mouse(mouse) => match mouse {
                 Mouse::LeftClick(line, _col) => {
@@ -310,11 +438,7 @@ impl ZellijPlugin for State {
                     // possible here, but guard anyway).
                     if line >= 0 {
                         let idx = self.scroll_offset + line as usize;
-                        let sidebar_rows = build_sidebar_rows(
-                            &self.tabs,
-                            &self.terminal_panes,
-                            &self.agent_records,
-                        );
+                        let sidebar_rows = self.sidebar_rows();
                         if let Some(row) = sidebar_rows.get(idx) {
                             match row.target() {
                                 RowTarget::Tab { position } => {
@@ -333,9 +457,7 @@ impl ZellijPlugin for State {
                     std::mem::replace(&mut self.scroll_offset, new_offset) != new_offset
                 }
                 Mouse::ScrollDown(_) => {
-                    let row_count =
-                        build_sidebar_rows(&self.tabs, &self.terminal_panes, &self.agent_records)
-                            .len();
+                    let row_count = self.sidebar_rows().len();
                     let new_offset = clamp_offset(row_count, self.scroll_offset + 1, self.rows);
                     std::mem::replace(&mut self.scroll_offset, new_offset) != new_offset
                 }
@@ -354,14 +476,15 @@ impl ZellijPlugin for State {
                 let Some(update) = parse_agent_status(payload) else {
                     return false;
                 };
-                let changed = apply_agent_status(&mut self.agent_records, update);
+                let changed = self.accept_agent_status(update);
                 for peer_id in &self.peer_plugin_ids {
                     send_plugin_message(*peer_id, AGENT_STATUS_SYNC_UPDATE, payload.to_owned());
                 }
                 changed
             }
-            AGENT_STATUS_SYNC_UPDATE => parse_agent_status(payload)
-                .is_some_and(|update| apply_agent_status(&mut self.agent_records, update)),
+            AGENT_STATUS_SYNC_UPDATE => {
+                parse_agent_status(payload).is_some_and(|update| self.accept_agent_status(update))
+            }
             AGENT_STATUS_SYNC_REQUEST => {
                 let Ok(requester_id) = payload.parse::<u32>() else {
                     return false;
@@ -369,19 +492,31 @@ impl ZellijPlugin for State {
                 if Some(requester_id) == self.plugin_id {
                     return false;
                 }
-                if let Some(snapshot) = serialize_agent_snapshot(&self.agent_records) {
+                if let Some(snapshot) =
+                    serialize_agent_snapshot(&self.agent_records, &self.agent_acknowledgements)
+                {
                     send_plugin_message(requester_id, AGENT_STATUS_SYNC_SNAPSHOT, snapshot);
                 }
                 false
             }
-            AGENT_STATUS_SYNC_SNAPSHOT => apply_agent_snapshot(&mut self.agent_records, payload),
+            AGENT_STATUS_SYNC_SNAPSHOT => apply_agent_snapshot(
+                &mut self.agent_records,
+                &mut self.agent_acknowledgements,
+                payload,
+            ),
+            AGENT_STATUS_SYNC_ACKNOWLEDGEMENT => {
+                parse_agent_acknowledgement(payload).is_some_and(|update| {
+                    apply_agent_acknowledgement(&mut self.agent_acknowledgements, update)
+                })
+            }
+            AGENT_STATUS_SYNC_FOCUS => parse_agent_focus(payload)
+                .is_some_and(|focused_panes| self.accept_focus_observation(focused_panes)),
             _ => false,
         }
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
-        let sidebar_rows =
-            build_sidebar_rows(&self.tabs, &self.terminal_panes, &self.agent_records);
+        let sidebar_rows = self.sidebar_rows();
         if rows != self.rows {
             self.rows = rows;
             self.scroll_offset = visible_window(
@@ -436,7 +571,67 @@ fn parse_agent_status(payload: &str) -> Option<AgentStatusUpdate> {
     })
 }
 
-fn serialize_agent_snapshot(records: &HashMap<u32, AgentRecord>) -> Option<String> {
+fn parse_agent_acknowledgement(payload: &str) -> Option<AgentAcknowledgementUpdate> {
+    let payload: AgentAcknowledgementPayload = serde_json::from_str(payload).ok()?;
+    if payload.version != AGENT_STATUS_VERSION
+        || payload.session_id.trim().is_empty()
+        || payload.updated_at_ms == 0
+    {
+        return None;
+    }
+    Some(AgentAcknowledgementUpdate {
+        pane_id: parse_terminal_pane_id(&payload.pane_id)?,
+        acknowledgement: AgentAcknowledgement {
+            session_id: payload.session_id,
+            updated_at_ms: payload.updated_at_ms,
+        },
+    })
+}
+
+fn serialize_agent_acknowledgement(
+    pane_id: u32,
+    acknowledgement: &AgentAcknowledgement,
+) -> Option<String> {
+    serde_json::to_string(&AgentAcknowledgementPayload {
+        version: AGENT_STATUS_VERSION,
+        pane_id: format!("terminal_{pane_id}"),
+        session_id: acknowledgement.session_id.clone(),
+        updated_at_ms: acknowledgement.updated_at_ms,
+    })
+    .ok()
+}
+
+fn parse_agent_focus(payload: &str) -> Option<HashSet<u32>> {
+    let payload: AgentFocusPayload = serde_json::from_str(payload).ok()?;
+    if payload.version != AGENT_STATUS_VERSION {
+        return None;
+    }
+    let pane_count = payload.pane_ids.len();
+    let focused_panes: HashSet<u32> = payload
+        .pane_ids
+        .iter()
+        .map(|pane_id| parse_terminal_pane_id(pane_id))
+        .collect::<Option<_>>()?;
+    (focused_panes.len() == pane_count).then_some(focused_panes)
+}
+
+fn serialize_agent_focus(focused_panes: &HashSet<u32>) -> Option<String> {
+    let mut pane_ids: Vec<String> = focused_panes
+        .iter()
+        .map(|pane_id| format!("terminal_{pane_id}"))
+        .collect();
+    pane_ids.sort();
+    serde_json::to_string(&AgentFocusPayload {
+        version: AGENT_STATUS_VERSION,
+        pane_ids,
+    })
+    .ok()
+}
+
+fn serialize_agent_snapshot(
+    records: &HashMap<u32, AgentRecord>,
+    acknowledgements: &HashMap<u32, AgentAcknowledgement>,
+) -> Option<String> {
     let mut records = records
         .iter()
         .map(|(pane_id, record)| AgentStatusPayload {
@@ -448,28 +643,59 @@ fn serialize_agent_snapshot(records: &HashMap<u32, AgentRecord>) -> Option<Strin
         })
         .collect::<Vec<_>>();
     records.sort_by(|left, right| left.pane_id.cmp(&right.pane_id));
+    let mut acknowledgements = acknowledgements
+        .iter()
+        .map(|(pane_id, acknowledgement)| AgentAcknowledgementPayload {
+            version: AGENT_STATUS_VERSION,
+            pane_id: format!("terminal_{pane_id}"),
+            session_id: acknowledgement.session_id.clone(),
+            updated_at_ms: acknowledgement.updated_at_ms,
+        })
+        .collect::<Vec<_>>();
+    acknowledgements.sort_by(|left, right| left.pane_id.cmp(&right.pane_id));
     serde_json::to_string(&AgentStatusSnapshot {
         version: AGENT_STATUS_VERSION,
         records,
+        acknowledgements,
     })
     .ok()
 }
 
-fn apply_agent_snapshot(records: &mut HashMap<u32, AgentRecord>, payload: &str) -> bool {
+fn apply_agent_snapshot(
+    records: &mut HashMap<u32, AgentRecord>,
+    acknowledgements: &mut HashMap<u32, AgentAcknowledgement>,
+    payload: &str,
+) -> bool {
     let Ok(snapshot) = serde_json::from_str::<AgentStatusSnapshot>(payload) else {
         return false;
     };
     if snapshot.version != AGENT_STATUS_VERSION {
         return false;
     }
-    snapshot.records.into_iter().fold(false, |changed, record| {
+    let records_changed = snapshot.records.into_iter().fold(false, |changed, record| {
         let update = serde_json::to_string(&record)
             .ok()
             .and_then(|record| parse_agent_status(&record));
-        update
-            .map(|update| apply_agent_status(records, update) || changed)
-            .unwrap_or(changed)
-    })
+        update.map_or(changed, |update| {
+            let pane_id = update.pane_id;
+            let record = update.record.clone();
+            let status_changed = apply_agent_status(records, update);
+            let acknowledgement_pruned = status_changed
+                && prune_superseded_agent_acknowledgement(acknowledgements, pane_id, &record);
+            changed || status_changed || acknowledgement_pruned
+        })
+    });
+    snapshot
+        .acknowledgements
+        .into_iter()
+        .fold(records_changed, |changed, acknowledgement| {
+            let update = serde_json::to_string(&acknowledgement)
+                .ok()
+                .and_then(|acknowledgement| parse_agent_acknowledgement(&acknowledgement));
+            update.map_or(changed, |update| {
+                apply_agent_acknowledgement(acknowledgements, update) || changed
+            })
+        })
 }
 
 fn send_plugin_message(destination_plugin_id: u32, name: &str, payload: String) {
@@ -501,6 +727,38 @@ fn apply_agent_status(records: &mut HashMap<u32, AgentRecord>, update: AgentStat
     }
     records.insert(update.pane_id, update.record);
     true
+}
+
+fn apply_agent_acknowledgement(
+    acknowledgements: &mut HashMap<u32, AgentAcknowledgement>,
+    update: AgentAcknowledgementUpdate,
+) -> bool {
+    if acknowledgements
+        .get(&update.pane_id)
+        .is_some_and(|current| {
+            update.acknowledgement.updated_at_ms < current.updated_at_ms
+                || *current == update.acknowledgement
+        })
+    {
+        return false;
+    }
+    acknowledgements.insert(update.pane_id, update.acknowledgement);
+    true
+}
+
+fn prune_superseded_agent_acknowledgement(
+    acknowledgements: &mut HashMap<u32, AgentAcknowledgement>,
+    pane_id: u32,
+    record: &AgentRecord,
+) -> bool {
+    let should_remove = acknowledgements
+        .get(&pane_id)
+        .is_some_and(|acknowledgement| {
+            (acknowledgement.session_id != record.session_id
+                || acknowledgement.updated_at_ms != record.updated_at_ms)
+                && acknowledgement.updated_at_ms <= record.updated_at_ms
+        });
+    should_remove && acknowledgements.remove(&pane_id).is_some()
 }
 
 fn terminal_pane_tabs(pane_manifest: &PaneManifest) -> HashMap<u32, usize> {
@@ -551,17 +809,34 @@ fn pane_sort_key(pane: &TerminalPane) -> (u8, usize, usize, u32) {
     (layer, pane.pane_y, pane.pane_x, pane.id)
 }
 
-fn renderable_agent_state(records: &HashMap<u32, AgentRecord>, pane_id: u32) -> Option<AgentState> {
-    records
-        .get(&pane_id)
-        .map(|record| record.state)
-        .filter(|state| *state != AgentState::Clear)
+fn renderable_agent_state(
+    records: &HashMap<u32, AgentRecord>,
+    acknowledgements: &HashMap<u32, AgentAcknowledgement>,
+    pane_id: u32,
+) -> Option<AgentState> {
+    let record = records.get(&pane_id)?;
+    if record.state == AgentState::Clear {
+        return None;
+    }
+    let acknowledged = record.state == AgentState::Done
+        && acknowledgements
+            .get(&pane_id)
+            .is_some_and(|acknowledgement| {
+                acknowledgement.session_id == record.session_id
+                    && acknowledgement.updated_at_ms == record.updated_at_ms
+            });
+    Some(if acknowledged {
+        AgentState::Idle
+    } else {
+        record.state
+    })
 }
 
 fn build_sidebar_rows(
     tabs: &[TabInfo],
     terminal_panes: &HashMap<usize, Vec<TerminalPane>>,
     records: &HashMap<u32, AgentRecord>,
+    acknowledgements: &HashMap<u32, AgentAcknowledgement>,
 ) -> Vec<SidebarRow> {
     let mut rows = Vec::new();
     for tab in tabs {
@@ -570,7 +845,7 @@ fn build_sidebar_rows(
             .map(Vec::as_slice)
             .unwrap_or_default();
         let state = if panes.len() == 1 {
-            renderable_agent_state(records, panes[0].id)
+            renderable_agent_state(records, acknowledgements, panes[0].id)
         } else {
             None
         };
@@ -592,17 +867,73 @@ fn build_sidebar_rows(
                     pane.title.clone()
                 },
                 focused: focused_pane_id == Some(pane.id),
-                state: renderable_agent_state(records, pane.id),
+                state: renderable_agent_state(records, acknowledgements, pane.id),
             }));
         }
     }
     rows
 }
 
+fn focused_terminal_pane_ids(
+    tabs: &[TabInfo],
+    terminal_panes: &HashMap<usize, Vec<TerminalPane>>,
+) -> Vec<u32> {
+    let has_attached_client_focus = tabs.iter().any(|tab| !tab.other_focused_clients.is_empty());
+    tabs.iter()
+        .filter(|tab| {
+            if has_attached_client_focus {
+                !tab.other_focused_clients.is_empty()
+            } else {
+                tab.active
+            }
+        })
+        .filter_map(|tab| {
+            focused_pane_in_tab(
+                tab,
+                terminal_panes
+                    .get(&tab.position)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+fn newly_focused_done_acknowledgements(
+    previous_focused_panes: &HashSet<u32>,
+    focused_panes: &HashSet<u32>,
+    records: &HashMap<u32, AgentRecord>,
+) -> Vec<AgentAcknowledgementUpdate> {
+    let mut newly_focused_panes: Vec<u32> = focused_panes
+        .difference(previous_focused_panes)
+        .copied()
+        .collect();
+    newly_focused_panes.sort_unstable();
+    newly_focused_panes
+        .into_iter()
+        .filter_map(|pane_id| {
+            let record = records
+                .get(&pane_id)
+                .filter(|record| record.state == AgentState::Done)?;
+            Some(AgentAcknowledgementUpdate {
+                pane_id,
+                acknowledgement: AgentAcknowledgement {
+                    session_id: record.session_id.clone(),
+                    updated_at_ms: record.updated_at_ms,
+                },
+            })
+        })
+        .collect()
+}
+
 fn focused_pane_id(tab: &TabInfo, panes: &[TerminalPane]) -> Option<u32> {
     if !tab.active {
         return None;
     }
+    focused_pane_in_tab(tab, panes)
+}
+
+fn focused_pane_in_tab(tab: &TabInfo, panes: &[TerminalPane]) -> Option<u32> {
     panes
         .iter()
         .find(|pane| {
@@ -651,6 +982,15 @@ fn remove_missing_agent_records(
     let old_count = records.len();
     records.retain(|pane_id, _| pane_tabs.contains_key(pane_id));
     old_count != records.len()
+}
+
+fn remove_missing_agent_acknowledgements(
+    acknowledgements: &mut HashMap<u32, AgentAcknowledgement>,
+    pane_tabs: &HashMap<u32, usize>,
+) -> bool {
+    let old_count = acknowledgements.len();
+    acknowledgements.retain(|pane_id, _| pane_tabs.contains_key(pane_id));
+    old_count != acknowledgements.len()
 }
 
 /// Largest valid scroll offset: 0 when everything fits.
@@ -934,6 +1274,13 @@ mod tests {
         }
     }
 
+    fn acknowledgement(session_id: &str, updated_at_ms: u64) -> AgentAcknowledgement {
+        AgentAcknowledgement {
+            session_id: session_id.to_owned(),
+            updated_at_ms,
+        }
+    }
+
     #[test]
     fn window_no_overflow() {
         assert_eq!(visible_window(5, Some(2), 0, 10), 0);
@@ -1113,6 +1460,133 @@ mod tests {
     }
 
     #[test]
+    fn parses_and_strictly_validates_acknowledgement_payloads() {
+        assert_eq!(
+            parse_agent_acknowledgement(
+                r#"{"version":1,"pane_id":"terminal_7","session_id":"session-a","updated_at_ms":42}"#,
+            ),
+            Some(AgentAcknowledgementUpdate {
+                pane_id: 7,
+                acknowledgement: acknowledgement("session-a", 42),
+            })
+        );
+
+        for payload in [
+            "not json",
+            r#"{"version":2,"pane_id":"terminal_7","session_id":"s","updated_at_ms":1}"#,
+            r#"{"version":1,"pane_id":"plugin_7","session_id":"s","updated_at_ms":1}"#,
+            r#"{"version":1,"pane_id":"terminal_7","session_id":"","updated_at_ms":1}"#,
+            r#"{"version":1,"pane_id":"terminal_7","session_id":"s","updated_at_ms":0}"#,
+        ] {
+            assert_eq!(
+                parse_agent_acknowledgement(payload),
+                None,
+                "payload: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn focus_observation_round_trips_and_rejects_invalid_panes() {
+        let focused_panes = HashSet::from([7, 9]);
+        let payload = serialize_agent_focus(&focused_panes).unwrap();
+        assert_eq!(parse_agent_focus(&payload), Some(focused_panes));
+
+        assert_eq!(
+            parse_agent_focus(r#"{"version":1,"pane_ids":[]}"#),
+            Some(HashSet::new())
+        );
+        for payload in [
+            "not json",
+            r#"{"version":2,"pane_ids":["terminal_7"]}"#,
+            r#"{"version":1,"pane_ids":["plugin_7"]}"#,
+            r#"{"version":1,"pane_ids":["terminal_7","terminal_7"]}"#,
+        ] {
+            assert_eq!(parse_agent_focus(payload), None, "payload: {payload}");
+        }
+    }
+
+    #[test]
+    fn acknowledgement_is_idempotent_and_rejects_older_references() {
+        let mut acknowledgements = HashMap::new();
+        let update = |session_id: &str, updated_at_ms| AgentAcknowledgementUpdate {
+            pane_id: 3,
+            acknowledgement: acknowledgement(session_id, updated_at_ms),
+        };
+
+        assert!(apply_agent_acknowledgement(
+            &mut acknowledgements,
+            update("session", 10)
+        ));
+        assert!(!apply_agent_acknowledgement(
+            &mut acknowledgements,
+            update("session", 10)
+        ));
+        assert!(!apply_agent_acknowledgement(
+            &mut acknowledgements,
+            update("older", 9)
+        ));
+        assert_eq!(acknowledgements[&3], acknowledgement("session", 10));
+    }
+
+    #[test]
+    fn matching_done_acknowledgement_renders_idle_only_for_exact_record() {
+        let mut records = HashMap::from([(
+            4,
+            AgentRecord {
+                session_id: "session".to_owned(),
+                state: AgentState::Done,
+                updated_at_ms: 20,
+            },
+        )]);
+        let acknowledgements = HashMap::from([(4, acknowledgement("session", 20))]);
+
+        assert_eq!(
+            renderable_agent_state(&records, &acknowledgements, 4),
+            Some(AgentState::Idle)
+        );
+        records.get_mut(&4).unwrap().updated_at_ms = 21;
+        assert_eq!(
+            renderable_agent_state(&records, &acknowledgements, 4),
+            Some(AgentState::Done)
+        );
+        records.get_mut(&4).unwrap().state = AgentState::Waiting;
+        assert_eq!(
+            renderable_agent_state(&records, &acknowledgements, 4),
+            Some(AgentState::Waiting)
+        );
+        records.get_mut(&4).unwrap().state = AgentState::Working;
+        assert_eq!(
+            renderable_agent_state(&records, &acknowledgements, 4),
+            Some(AgentState::Working)
+        );
+    }
+
+    #[test]
+    fn newer_status_prunes_superseded_acknowledgement_but_future_one_survives() {
+        let mut acknowledgements = HashMap::from([(4, acknowledgement("session", 20))]);
+        let newer = AgentRecord {
+            session_id: "session".to_owned(),
+            state: AgentState::Working,
+            updated_at_ms: 21,
+        };
+        assert!(prune_superseded_agent_acknowledgement(
+            &mut acknowledgements,
+            4,
+            &newer
+        ));
+        assert!(!acknowledgements.contains_key(&4));
+
+        acknowledgements.insert(4, acknowledgement("future", 30));
+        assert!(!prune_superseded_agent_acknowledgement(
+            &mut acknowledgements,
+            4,
+            &newer
+        ));
+        assert_eq!(acknowledgements[&4], acknowledgement("future", 30));
+    }
+
+    #[test]
     fn status_update_replaces_session_and_rejects_stale_message() {
         let mut records = HashMap::new();
         let update = |session: &str, state, updated_at_ms| AgentStatusUpdate {
@@ -1267,7 +1741,7 @@ mod tests {
                 updated_at_ms: 20,
             },
         )]);
-        assert_eq!(renderable_agent_state(&records, 4), None);
+        assert_eq!(renderable_agent_state(&records, &HashMap::new(), 4), None);
     }
 
     #[test]
@@ -1325,6 +1799,23 @@ mod tests {
         assert!(remove_missing_agent_records(&mut records, &pane_tabs));
         assert_eq!(records.keys().copied().collect::<Vec<_>>(), vec![2]);
         assert!(!remove_missing_agent_records(&mut records, &pane_tabs));
+
+        let mut acknowledgements = HashMap::from([
+            (1, acknowledgement("closed", 1)),
+            (2, acknowledgement("open", 2)),
+        ]);
+        assert!(remove_missing_agent_acknowledgements(
+            &mut acknowledgements,
+            &pane_tabs
+        ));
+        assert_eq!(
+            acknowledgements,
+            HashMap::from([(2, acknowledgement("open", 2))])
+        );
+        assert!(!remove_missing_agent_acknowledgements(
+            &mut acknowledgements,
+            &pane_tabs
+        ));
     }
 
     #[test]
@@ -1346,7 +1837,7 @@ mod tests {
             (3, agent_record(AgentState::Waiting)),
         ]);
 
-        let rows = build_sidebar_rows(&tabs, &panes, &records);
+        let rows = build_sidebar_rows(&tabs, &panes, &records, &HashMap::new());
         assert_eq!(
             rows,
             vec![
@@ -1406,7 +1897,7 @@ mod tests {
             (2, agent_record(AgentState::Waiting)),
         ]);
 
-        let rows = build_sidebar_rows(&tabs, &panes, &records);
+        let rows = build_sidebar_rows(&tabs, &panes, &records, &HashMap::new());
         assert!(rows[0].has_attention());
         assert_eq!(rows[0].state(), Some(AgentState::Done));
         assert!(rows[1].has_attention());
@@ -1447,7 +1938,7 @@ mod tests {
             ],
         )]);
 
-        let rows = build_sidebar_rows(&tabs, &panes, &HashMap::new());
+        let rows = build_sidebar_rows(&tabs, &panes, &HashMap::new(), &HashMap::new());
         assert_eq!(rows.len(), 4);
         assert!(matches!(rows[0], SidebarRow::Tab { position: 0, .. }));
         assert!(matches!(
@@ -1470,9 +1961,148 @@ mod tests {
             ],
         )]);
 
-        let rows = build_sidebar_rows(&[active_tab], &panes, &HashMap::new());
+        let rows = build_sidebar_rows(&[active_tab], &panes, &HashMap::new(), &HashMap::new());
         assert!(!rows[1].is_selected());
         assert!(rows[2].is_selected());
+    }
+
+    #[test]
+    fn newly_focused_done_record_produces_exact_acknowledgement_only() {
+        let tabs = vec![tab(0, "active", true), tab(1, "inactive", false)];
+        let panes = HashMap::from([
+            (
+                0,
+                vec![terminal_pane(7, "focused", true, false, false, 0, 0)],
+            ),
+            (1, vec![terminal_pane(8, "other", true, false, false, 0, 0)]),
+        ]);
+        let mut records = HashMap::from([
+            (
+                7,
+                AgentRecord {
+                    session_id: "focused-session".to_owned(),
+                    state: AgentState::Done,
+                    updated_at_ms: 42,
+                },
+            ),
+            (
+                8,
+                AgentRecord {
+                    session_id: "inactive-session".to_owned(),
+                    state: AgentState::Done,
+                    updated_at_ms: 43,
+                },
+            ),
+        ]);
+
+        let focused_panes: HashSet<u32> = focused_terminal_pane_ids(&tabs, &panes)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            newly_focused_done_acknowledgements(&HashSet::new(), &focused_panes, &records),
+            vec![AgentAcknowledgementUpdate {
+                pane_id: 7,
+                acknowledgement: acknowledgement("focused-session", 42),
+            }]
+        );
+        assert!(
+            newly_focused_done_acknowledgements(&focused_panes, &focused_panes, &records)
+                .is_empty()
+        );
+        records.get_mut(&7).unwrap().state = AgentState::Working;
+        assert!(
+            newly_focused_done_acknowledgements(&HashSet::new(), &focused_panes, &records)
+                .is_empty()
+        );
+        records.get_mut(&7).unwrap().state = AgentState::Waiting;
+        assert!(
+            newly_focused_done_acknowledgements(&HashSet::new(), &focused_panes, &records)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn attached_client_focus_overrides_plugin_local_active_tab() {
+        let locally_active = tab(0, "plugin-local", true);
+        let mut client_focused = tab(1, "client-focused", false);
+        client_focused.other_focused_clients = vec![1];
+        let tabs = vec![locally_active, client_focused];
+        let panes = HashMap::from([
+            (0, vec![terminal_pane(7, "local", true, false, false, 0, 0)]),
+            (
+                1,
+                vec![terminal_pane(8, "viewed", true, false, false, 0, 0)],
+            ),
+        ]);
+        let records = HashMap::from([
+            (
+                7,
+                AgentRecord {
+                    session_id: "local-session".to_owned(),
+                    state: AgentState::Done,
+                    updated_at_ms: 42,
+                },
+            ),
+            (
+                8,
+                AgentRecord {
+                    session_id: "viewed-session".to_owned(),
+                    state: AgentState::Done,
+                    updated_at_ms: 43,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            focused_terminal_pane_ids(&tabs, &panes),
+            vec![8],
+            "only the pane viewed by an attached Zellij client is acknowledged"
+        );
+        let focused_panes: HashSet<u32> = focused_terminal_pane_ids(&tabs, &panes)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            newly_focused_done_acknowledgements(&HashSet::from([7]), &focused_panes, &records),
+            vec![AgentAcknowledgementUpdate {
+                pane_id: 8,
+                acknowledgement: acknowledgement("viewed-session", 43),
+            }]
+        );
+    }
+
+    #[test]
+    fn peer_focus_observation_preserves_done_until_returning_to_completed_pane() {
+        let mut state = State {
+            tabs: vec![tab(0, "first", true), tab(1, "second", false)],
+            terminal_panes: HashMap::from([
+                (0, vec![terminal_pane(7, "first", true, false, false, 0, 0)]),
+                (
+                    1,
+                    vec![terminal_pane(8, "second", true, false, false, 0, 0)],
+                ),
+            ]),
+            focused_terminal_panes: Some(HashSet::from([7])),
+            ..State::default()
+        };
+
+        assert!(state.accept_agent_status(AgentStatusUpdate {
+            pane_id: 7,
+            record: AgentRecord {
+                session_id: "completed-elsewhere".to_owned(),
+                state: AgentState::Done,
+                updated_at_ms: 44,
+            },
+        }));
+        assert!(state.agent_acknowledgements.is_empty());
+
+        assert!(!state.accept_focus_observation(HashSet::from([8])));
+        assert!(state.agent_acknowledgements.is_empty());
+
+        assert!(state.accept_focus_observation(HashSet::from([7])));
+        assert_eq!(
+            state.agent_acknowledgements.get(&7),
+            Some(&acknowledgement("completed-elsewhere", 44))
+        );
     }
 
     #[test]
@@ -1485,7 +2115,7 @@ mod tests {
                 terminal_pane(2, "two", false, false, false, 10, 0),
             ],
         )]);
-        let sidebar_rows = build_sidebar_rows(&tabs, &panes, &HashMap::new());
+        let sidebar_rows = build_sidebar_rows(&tabs, &panes, &HashMap::new(), &HashMap::new());
 
         assert_eq!(active_tab_row(&sidebar_rows), Some(3));
         assert_eq!(visible_window(sidebar_rows.len(), Some(3), 0, 2), 2);
@@ -1531,7 +2161,8 @@ mod tests {
                 },
             ),
         ]);
-        let payload = serialize_agent_snapshot(&source).unwrap();
+        let source_acknowledgements = HashMap::from([(2, acknowledgement("two", 20))]);
+        let payload = serialize_agent_snapshot(&source, &source_acknowledgements).unwrap();
         let mut destination = HashMap::from([(
             1,
             AgentRecord {
@@ -1541,15 +2172,68 @@ mod tests {
             },
         )]);
 
-        assert!(apply_agent_snapshot(&mut destination, &payload));
+        let mut acknowledgements = HashMap::new();
+        assert!(apply_agent_snapshot(
+            &mut destination,
+            &mut acknowledgements,
+            &payload
+        ));
         assert_eq!(destination[&1].session_id, "newer");
         assert_eq!(destination[&1].state, AgentState::Waiting);
         assert_eq!(destination[&2], source[&2]);
-        assert!(!apply_agent_snapshot(&mut destination, &payload));
+        assert_eq!(acknowledgements, source_acknowledgements);
         assert!(!apply_agent_snapshot(
             &mut destination,
+            &mut acknowledgements,
+            &payload
+        ));
+        assert!(!apply_agent_snapshot(
+            &mut destination,
+            &mut acknowledgements,
             r#"{"version":2,"records":[]}"#
         ));
+    }
+
+    #[test]
+    fn snapshot_recovers_acknowledgement_before_matching_status() {
+        let source_records = HashMap::from([(
+            7,
+            AgentRecord {
+                session_id: "session".to_owned(),
+                state: AgentState::Done,
+                updated_at_ms: 42,
+            },
+        )]);
+        let source_acknowledgements = HashMap::from([(7, acknowledgement("session", 42))]);
+        let payload = serialize_agent_snapshot(&source_records, &source_acknowledgements).unwrap();
+        let mut records = HashMap::new();
+        let mut acknowledgements = HashMap::from([(7, acknowledgement("future", 50))]);
+
+        assert!(apply_agent_snapshot(
+            &mut records,
+            &mut acknowledgements,
+            &payload
+        ));
+        assert_eq!(records, source_records);
+        assert_eq!(acknowledgements[&7], acknowledgement("future", 50));
+
+        let acknowledgement_payload =
+            serialize_agent_acknowledgement(9, &acknowledgement("before-status", 60)).unwrap();
+        let update = parse_agent_acknowledgement(&acknowledgement_payload).unwrap();
+        assert!(apply_agent_acknowledgement(&mut acknowledgements, update));
+        assert_eq!(renderable_agent_state(&records, &acknowledgements, 9), None);
+        records.insert(
+            9,
+            AgentRecord {
+                session_id: "before-status".to_owned(),
+                state: AgentState::Done,
+                updated_at_ms: 60,
+            },
+        );
+        assert_eq!(
+            renderable_agent_state(&records, &acknowledgements, 9),
+            Some(AgentState::Idle)
+        );
     }
 
     #[test]
