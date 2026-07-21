@@ -45,7 +45,8 @@ Keystrokes can be injected into the pipe (e.g. `printf 'y'` for the permission p
 - `src/main.rs` — the whole plugin (state, update, render, pure helpers + unit tests)
 - `mise.toml` and `scripts/` — reproducible local tasks and safe runtime helpers
 - `DEVELOPMENT.md` — daily, feature, verification, release, and documentation workflow
-- `hooks/codex/` — source, user-level configuration template, and tests for the Codex lifecycle-to-Zellij status bridge
+- `hooks/common/` — agent-neutral lifecycle bridge, durable status store, and tests
+- `hooks/codex/` and `hooks/claude/` — agent adapters, user-level configuration templates, and tests
 - `openspec/` — baseline specifications and active change artifacts
 - `zellij.kdl` — dev layout (left sidebar + status-bar, no horizontal tab-bar)
 - `tasks/` — todo/lessons notes
