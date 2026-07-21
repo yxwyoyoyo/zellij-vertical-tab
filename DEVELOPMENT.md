@@ -18,7 +18,7 @@ repository.
 
 ## Daily loop
 
-For pure Rust or bridge logic:
+For pure Rust or agent-bridge logic:
 
 ```sh
 mise run test
@@ -45,10 +45,10 @@ mise run reload -- Hub
 ```
 
 Hot reload resets the plugin's in-memory agent records. It cannot safely infer
-the state of every Codex process, so restore only a state you know:
+the state of every agent process, so restore only a state you know:
 
 ```sh
-mise run status -- terminal_0 <codex-session-id> done Hub
+mise run status -- terminal_0 <agent-session-id> done Hub
 ```
 
 Starting a new prompt also republishes state through the normal Codex hooks.
@@ -67,7 +67,7 @@ not reconstruct pane geometry.
 2. For user-visible behavior, create an OpenSpec change before implementation.
    Keep proposal, delta specs, design, and tasks aligned as decisions change.
 3. Implement one coherent slice and add pure host tests beside `src/main.rs` or
-   bridge tests under `hooks/codex/`.
+   bridge tests under `hooks/codex/` and `hooks/claude/`.
 4. Run `mise run test` during iteration and `mise run reload` for live UI
    feedback. Always rebuild before interpreting a runtime result.
 5. Run the full local gate before review:
@@ -103,7 +103,7 @@ not reconstruct pane geometry.
 | Change | Minimum during iteration | Before merge |
 | --- | --- | --- |
 | Pure formatting or row model | `mise run test` | `mise run check`, live reload with native list selection and hierarchy |
-| Codex hook/protocol | `mise run test` | `mise run check`, two-session status test |
+| Agent hook/protocol | `mise run test` | `mise run check`, mixed-agent two-session status test, real permission/completion attention test |
 | Pane focus/scroll/input | `mise run test`, live reload | `mise run check`, multi-tab/multi-pane test |
 | Sidebar layout/resize | fresh disposable session | drag the sidebar/content boundary and compare pane geometry before/after |
 | Layout/lifecycle/permissions | targeted tests | `mise run check`, fresh headless or interactive session |
@@ -113,7 +113,8 @@ not reconstruct pane geometry.
 The live pane-aware matrix should cover compact one-pane tabs, native `>`/`-`
 hierarchy and selected surfaces, multi-pane child rows, independent statuses in
 two tabs, exact pane clicks after scrolling, wide/long titles, right-edge
-spacing, peer status synchronization, and status cleanup after Codex exits.
+spacing, peer status synchronization, native attention for permission and final
+answer events, and status cleanup after Codex or Claude Code exits.
 
 ## Agent-status performance invariants
 
@@ -147,7 +148,7 @@ Reference measurements from the July 2026 macOS test host:
 | Two watcher starts for one Codex PID | One resident watcher (about 25 MiB RSS), then zero after process exit |
 | Ordinary Python hook, 20 sequential invocations | About 1.18 seconds total, or 59 ms per invocation |
 | One lifecycle update with `N` sidebars | `N` Zellij deliveries; no plugin relay |
-| One focus transition with `N` sidebars | At most `2(N - 1)` peer messages: reports to the leader plus one leader fanout |
+| One focus transition with `N` sidebars | At most `3(N - 1)` peer messages: nonleader reports, leader focus fanout, and one acknowledgement fanout |
 
 The Python interpreter remains the main per-session watcher memory cost. The
 current change bounds that cost to one watcher per Codex process; replacing the
@@ -183,7 +184,7 @@ mise tasks ls
 ```
 
 - `setup` — install the WASM target and pinned project CLIs
-- `test` — Rust unit tests plus Python bridge tests
+- `test` — Rust unit tests plus Codex and Claude Code Python bridge tests
 - `build` — debug WASM
 - `spec` — strict OpenSpec validation
 - `check` — formatting, tests, Clippy, debug WASM, OpenSpec, and diff hygiene

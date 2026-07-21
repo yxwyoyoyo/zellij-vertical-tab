@@ -34,8 +34,14 @@ const AGENT_STATUS_VERSION: u8 = 1;
 const AGENT_CACHE_PREFIX: &str = "agent-status";
 const AGENT_CACHE_MAX_BYTES: usize = 1024 * 1024;
 const HOST_RESTORE_MAX_BYTES: usize = 1024 * 1024;
-const HOST_RESTORE_SCRIPT: &str =
-    r#"exec "${CODEX_HOME:-$HOME/.codex}/hooks/agent_status.py" --snapshot "$1""#;
+const HOST_RESTORE_SCRIPT: &str = r#"
+codex_helper="${CODEX_HOME:-$HOME/.codex}/hooks/agent_status.py"
+claude_helper="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/agent_status.py"
+if [ -x "$codex_helper" ]; then
+    exec "$codex_helper" --snapshot "$1"
+fi
+exec "$claude_helper" --snapshot "$1"
+"#;
 const ROW_RIGHT_PADDING: usize = 1;
 const TAB_LIST_CHROME_WIDTH: usize = 3;
 const PANE_LIST_CHROME_WIDTH: usize = 5;
@@ -59,6 +65,8 @@ enum AgentLifecycleEvent {
     PreToolUse,
     PermissionRequest,
     PostToolUse,
+    PostToolUseFailure,
+    PermissionDenied,
     Stop,
     AgentTurnComplete,
     SessionExit,
@@ -1506,6 +1514,16 @@ mod tests {
 
     static TEMP_DIRECTORY_ID: AtomicUsize = AtomicUsize::new(0);
 
+    #[test]
+    fn host_restore_prefers_codex_and_falls_back_to_claude() {
+        assert!(HOST_RESTORE_SCRIPT.contains("if [ -x \"$codex_helper\" ]"));
+        let codex_position = HOST_RESTORE_SCRIPT.find("exec \"$codex_helper\"").unwrap();
+        let claude_position = HOST_RESTORE_SCRIPT.find("exec \"$claude_helper\"").unwrap();
+        assert!(codex_position < claude_position);
+        assert!(HOST_RESTORE_SCRIPT.contains("${CLAUDE_CONFIG_DIR:-$HOME/.claude}"));
+        assert_eq!(HOST_RESTORE_SCRIPT.matches("--snapshot \"$1\"").count(), 2);
+    }
+
     fn temp_directory(label: &str) -> std::path::PathBuf {
         let id = TEMP_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -1746,6 +1764,22 @@ mod tests {
                 },
             })
         );
+
+        for (event, expected) in [
+            (
+                "post_tool_use_failure",
+                AgentLifecycleEvent::PostToolUseFailure,
+            ),
+            ("permission_denied", AgentLifecycleEvent::PermissionDenied),
+        ] {
+            let payload = format!(
+                r#"{{"version":1,"pane_id":"terminal_7","session_id":"claude","state":"working","updated_at_ms":43,"event":"{event}","turn_id":"prompt-1"}}"#
+            );
+            assert_eq!(
+                parse_agent_status(&payload).map(|update| update.record.event),
+                Some(Some(expected))
+            );
+        }
     }
 
     #[test]

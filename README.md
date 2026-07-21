@@ -19,10 +19,10 @@ A [Zellij](https://zellij.dev) plugin that renders the session's tabs **vertical
 - Left-click a tab row to switch tabs or a pane row to focus that exact pane
 - Scroll wheel moves the flattened tab-and-pane list when it overflows the pane height; `▲`/`▼` markers indicate hidden rows
 - The active tab is always kept in view (follows keyboard tab switching)
-- Codex lifecycle status shown as a right-aligned badge, vertically aligned and theme-colored: dim `` idle, cyan `` working, orange `` waiting for permission, or green `` answer ready
-- Multiple panes in one tab show their Codex state independently on each pane row without an agent-name prefix
-- Answer-ready and approval events use Zellij's native visual bell and retain an orange `` attention icon on an inactive owning tab until Zellij acknowledges it
-- Returning to a pane whose current Codex state is `done` acknowledges that exact result and presents it as idle without rewriting the lifecycle record
+- Codex and Claude Code lifecycle status shown as a right-aligned badge, vertically aligned and theme-colored: dim `` idle, cyan `` working, orange `` waiting for permission, or green `` answer ready
+- Multiple panes in one tab show their agent state independently on each pane row without an agent-name prefix
+- Codex and Claude Code answer-ready and approval events use Zellij's native visual bell and retain an orange `` attention icon on an inactive owning tab until Zellij acknowledges it
+- Returning to a pane whose current agent state is `done` acknowledges that exact result and presents it as idle without rewriting the lifecycle record
 - Agent lifecycle and acknowledgement state recovers across client detach, session switching, reattach, and plugin hot reload while the same Zellij server remains alive
 
 ## Requirements
@@ -49,7 +49,12 @@ mise run dev
 
 On first load zellij asks for the plugin's permissions (`ReadApplicationState` to see tabs, `ChangeApplicationState` to switch them, `ReadCliPipes` to receive agent status, `MessageAndLaunchOtherPlugins` to synchronize the sidebar instances created for separate tabs, and `RunCommands` to recover lifecycle events emitted while detached). Approve with `y` — the choice is cached afterwards.
 
-## Codex agent status
+## Agent status
+
+The sidebar supports Codex and Claude Code through the same agent-neutral,
+pane-scoped protocol. Install the bridge for each agent you use.
+
+### Codex
 
 The repository includes a dependency-free Python bridge and user-level hook template under `hooks/codex/`. Install them once so Codex sessions launched from any project publish status:
 
@@ -105,6 +110,47 @@ Badge colors come from the active Zellij theme: idle is dimmed, working uses cya
 Returning to a completed pane in a tab viewed by an attached Zellij client acknowledges its current `done` record and changes the visible badge from `` to idle ``. A completion that arrives while its pane remains focused stays `done` until the user leaves and returns. The plugin acknowledges only a confirmed focus transition, rather than status arrival against potentially stale tab metadata, so an unseen tab cannot turn idle during a tab-switch race. Because every tab owns a separate sidebar instance, changed client-viewed pane sets are shared between peers so leaving through one tab and returning through another forms one session-wide focus history. The acknowledgement is tied to that record's Codex session ID and timestamp, so a newer lifecycle event immediately replaces the idle presentation. `working` and `waiting` are never acknowledged by focus. Status acknowledgement remains separate from Zellij's native bell state and clearing behavior.
 
 Closing a pane or exiting Codex clears its status, and starting a new Codex session in a reused pane replaces the old session. Codex initializes lifecycle hooks lazily, so a newly opened TUI may not show `` until its first prompt is submitted. Exit cleanup and detached recovery are best-effort if the bridge cannot identify the Zellij server ancestor; closing the pane still clears the plugin record after a client is attached.
+
+### Claude Code
+
+Install the Claude bridge and the same dependency-free durable store under the
+user-level Claude configuration directory:
+
+```sh
+mkdir -p ~/.claude/hooks
+install -m 755 hooks/claude/agent_status.py ~/.claude/hooks/agent_status.py
+install -m 644 hooks/codex/status_store.py ~/.claude/hooks/status_store.py
+```
+
+Merge the `hooks` object from `hooks/claude/settings.json` into
+`~/.claude/settings.json`. Preserve existing `env`, model, theme, permissions,
+plugins, and hook handlers; do not replace the whole settings file. Start a new
+Claude Code session after changing the file. If `CLAUDE_CONFIG_DIR` points
+elsewhere, install both files there and adjust the merged hook command paths;
+the plugin's recovery lookup honors that environment variable.
+
+Claude publishes idle at session start; working when a prompt starts or tool
+control returns to the agent; waiting when a permission dialog appears; done
+when the response stops; and clear when the session ends or switches. Claude's
+prompt ID is used as the turn identity, so a delayed tool event cannot reopen a
+completed prompt while the next prompt can. `SessionEnd` handles normal exit,
+`/clear`, and interactive session switching. An abrupt process failure in a
+still-open pane remains best-effort until the pane closes or another agent
+session starts there.
+
+On Claude Code 2.1.141 or newer, the same bridge returns one supported terminal
+BEL sequence when a visible permission request appears and when a final answer
+stops. Zellij can then retain native attention on the owning tab and render the
+same `` icon used for Codex. A continuing stop hook does not ring, and the
+bridge emits no bell for ordinary working events. This does not approve, deny,
+or block any Claude action. Native bell retention is tab-scoped in Zellij while
+the lifecycle badge remains attached to the exact pane.
+
+Codex and Claude Code can run concurrently in different panes. Both use the
+same badges and colors, and the UI deliberately does not add an agent-name
+prefix. Their records remain isolated by Zellij server, terminal pane, agent
+session, prompt or turn identity, and timestamp. Either installed bridge can
+serve the shared host-journal snapshot used after detach or plugin reload.
 
 ## Install for everyday use
 
@@ -165,9 +211,9 @@ verification, status restoration, documentation, and release workflows.
 - `set_selectable(false)` makes the pane unfocusable (same pattern as the built-in tab-bar). On zellij 0.44 it must not be called during initial startup when the pane lives in a `default_tab_template`, so the plugin defers it to the first event. The percentage layout keeps the pane flexible so Zellij's native boundary drag can resize it.
 - Rendering uses Zellij's `NestedListItem` component, including its native hierarchy bullets, selected/unselected list colors, bold text, and full-width selection surface. Badge ranges layer their semantic theme colors onto the same list items.
 - `PaneUpdate` associates terminal panes with tabs and supplies pane titles, focus, layers, and geometry. The plugin flattens tabs and multi-pane children into the same row model used by rendering, scrolling, and mouse input.
-- `TabUpdate` supplies Zellij's persistent native bell state. The plugin displays that attention at tab scope and leaves exact Codex lifecycle ownership on the appropriate compact tab or pane child row.
-- The `vertical-tab-agent-status` Zellij pipe carries versioned lifecycle messages from the user-level Codex hook. The plugin keeps only the newest session record per terminal pane and places it on the compact tab row or exact pane child as appropriate.
-- Focus acknowledgement uses a separate internal peer message and snapshot field keyed to the exact completed record; it never fabricates an external Codex `idle` event.
+- `TabUpdate` supplies Zellij's persistent native bell state. The plugin displays that attention at tab scope and leaves exact agent lifecycle ownership on the appropriate compact tab or pane child row.
+- The `vertical-tab-agent-status` Zellij pipe carries versioned lifecycle messages from the user-level Codex and Claude Code hooks. The plugin keeps only the newest session record per terminal pane and places it on the compact tab row or exact pane child as appropriate.
+- Focus acknowledgement uses a separate internal peer message and snapshot field keyed to the exact completed record; it never fabricates an external agent `idle` event.
 
 ## License
 
