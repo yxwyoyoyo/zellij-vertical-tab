@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(dirname -- "$script_dir")
+
+cd "$repo_root"
+openwiki code --update --print
+
+# OpenWiki 0.2.0 always creates a scheduled workflow and writes the same
+# managed guidance through both AGENTS.md and CLAUDE.md. This repository keeps
+# documentation updates local and CLAUDE.md is a symlink to AGENTS.md, so remove
+# the unused workflow and normalize the one canonical instruction block.
+rm -f "$repo_root/.github/workflows/openwiki-update.yml"
+
+python3 - "$repo_root/AGENTS.md" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+start_marker = "<!-- OPENWIKI:START -->"
+end_marker = "<!-- OPENWIKI:END -->"
+start = text.find(start_marker)
+end = text.find(end_marker, start + len(start_marker))
+if start < 0 or end < 0:
+    raise SystemExit("OpenWiki managed block not found in AGENTS.md")
+
+replacement = """<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+Regenerate OpenWiki locally with `mise run docs` after source code, specifications, or maintained documentation change. Do not hand-edit generated OpenWiki pages; update their sources and regenerate them instead.
+
+<!-- OPENWIKI:END -->"""
+
+path.write_text(text[:start] + replacement + text[end + len(end_marker):])
+PY
