@@ -12,7 +12,7 @@ This runbook applies the invariants in the [plugin architecture](architecture.md
 
 ## Mise-managed workflows
 
-`AGENTS.md` and `DEVELOPMENT.md` are the canonical maintainer workflow. The checked-in `mise.toml` pins Rust 1.97.1 and Node 26.5.0 and exposes task aliases so tests, builds, runtime helpers, releases, specifications, and documentation use consistent entrypoints.
+`AGENTS.md` is the canonical shared agent instruction file, with `CLAUDE.md` as a compatibility symlink; `DEVELOPMENT.md` is the detailed maintainer workflow. The checked-in `mise.toml` pins Rust 1.97.1 and Node 26.5.0 and exposes task aliases so tests, builds, runtime helpers, releases, specifications, and documentation use consistent entrypoints.
 
 ### Bootstrap and task entrypoints
 
@@ -218,4 +218,4 @@ Confirm the explicit binary target and `register_plugin!(State)` remain. A react
 - `mise run release` gates and builds release WASM; `mise run install` copies it to `${ZELLIJ_PLUGIN_DIR:-$HOME/.config/zellij/plugins}`, and `mise run deploy -- <session>` installs then reloads it. When recovery or synchronization changes span agent hooks and `src/main.rs`, deploy the global hooks and WASM together. Startup-sensitive changes still need a new session.
 - No checked-in product CI publishes WASM; release and installation remain maintainer-run tasks.
 - Keep baseline OpenSpec files synchronized with implemented behavior, then archive completed changes with their proposal/design/task evidence. `mise run spec` performs strict validation.
-- Run `mise run docs` only after code and specifications stabilize; it invokes an OpenWiki code-mode update. `.github/workflows/openwiki-update.yml` also updates documentation daily or on demand, but does not build, test, install, or release the plugin.
+- Run `mise run docs` only after code and specifications stabilize. `mise.toml` delegates to `scripts/update-openwiki`, which runs a local OpenWiki code-mode update, removes the generator-created scheduled workflow, and restores the canonical local-update guidance in `AGENTS.md`. `CLAUDE.md` receives the same guidance through its symlink rather than a duplicate managed file.

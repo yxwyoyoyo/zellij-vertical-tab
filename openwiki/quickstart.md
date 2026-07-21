@@ -69,10 +69,9 @@ See [architecture constraints](architecture.md#runtime-and-layout-constraints) f
 | `zellij.kdl` | Development template with 13% flexible sidebar, sibling content pane, and status bar | Changing layout or launching locally |
 | `Cargo.toml` | Binary target, ABI-sensitive dependency pin, and size-focused release profile | Changing packaging or dependencies |
 | `mise.toml` | Pinned tools and reproducible setup, test, build, check, reload, release, install, deploy, status, and docs tasks | Running or changing maintainer automation |
-| `scripts/` | Safe session-aware plugin reload and explicit known-state status republication | Changing runtime helpers or reload recovery |
+| `scripts/` | Safe session-aware plugin reload, explicit known-state status republication, and local OpenWiki update cleanup | Changing runtime helpers, reload recovery, or documentation automation |
 | `README.md` and `docs/agent-status.md` | Concise user install/behavior overview and detailed Codex, Claude Code, recovery, and adapter setup | Updating public or agent-integration instructions |
 | `AGENTS.md` and `DEVELOPMENT.md` | Canonical commands, feature/release workflow, PTY runbook, and crash-derived constraints | Preparing or validating a change |
-| `.github/workflows/openwiki-update.yml` | Scheduled/manual documentation update PR | Maintaining wiki automation |
 
 ## Repository progression
 
@@ -85,7 +84,7 @@ Git history shows the initial vertical list followed by specification-driven inc
 
 ## Backlog
 
-- **Automated product CI/artifact publishing** — source anchor: `.github/workflows/` and `tasks/todo.md`; deferred because the only checked-in workflow updates OpenWiki.
+- **Automated product CI/artifact publishing** — source anchor: `.github/workflows/` and `tasks/todo.md`; deferred because product CI remains a future idea, while OpenWiki updates run locally through `mise run docs` rather than a maintained repository workflow.
 - **Future interactions (hover, new-tab row, right-click close)** — source anchor: `tasks/todo.md`; deferred because these remain ideas rather than implemented behavior.
 - **Upstream Zellij startup-crash report** — source anchor: `tasks/lessons.md`; deferred because no upstream issue or resolution is recorded.
 - **Standalone license file** — source anchor: `Cargo.toml` and `README.md`; metadata says MIT but no `LICENSE` file is checked in.

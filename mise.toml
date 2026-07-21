@@ -37,6 +37,9 @@ run = [
   "cargo clippy --all-targets -- -D warnings",
   "cargo build --target wasm32-wasip1",
   "openspec validate --all --strict",
+  "sh -n scripts/update-openwiki",
+  "test ! -e .github/workflows/openwiki-update.yml",
+  "test -L CLAUDE.md && test \"$(readlink CLAUDE.md)\" = \"AGENTS.md\"",
   "git diff --check",
 ]
 
@@ -76,4 +79,4 @@ run = "./scripts/publish-agent-status"
 
 [tasks.docs]
 description = "Regenerate the repository OpenWiki"
-run = "openwiki code --update --print"
+run = "./scripts/update-openwiki"
