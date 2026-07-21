@@ -5,24 +5,23 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
-import time
 from typing import Any
 
+COMMON_DIRECTORY = Path(__file__).resolve().parent.parent / "common"
+if COMMON_DIRECTORY.is_dir():
+    sys.path.insert(0, str(COMMON_DIRECTORY))
+
 try:
-    from status_store import apply_payload as persist_payload
-    from status_store import find_zellij_ancestor
+    from agent_bridge import AgentUpdate
+    from agent_bridge import dispatch_update
 except ImportError:
-    def persist_payload(_payload: object, _zellij_pid: int) -> bool:
-        return False
+    AgentUpdate = None
 
-    def find_zellij_ancestor(_start_pid: int | None = None) -> int | None:
+    def dispatch_update(*_args: object, **_kwargs: object) -> None:
         return None
-
-
-PIPE_NAME = "vertical-tab-agent-status"
-PROTOCOL_VERSION = 1
 
 
 def split_arguments(arguments: list[str]) -> tuple[list[str], str] | None:
@@ -39,50 +38,25 @@ def split_arguments(arguments: list[str]) -> tuple[list[str], str] | None:
     return arguments[1:separator], arguments[-1]
 
 
-def build_done_payload(raw_notification: str, pane_id: str) -> dict[str, Any] | None:
+def build_done_update(raw_notification: str) -> Any | None:
     try:
         notification = json.loads(raw_notification)
     except json.JSONDecodeError:
         return None
     if not isinstance(notification, dict):
         return None
-    if notification.get("type") != "agent-turn-complete":
+    if AgentUpdate is None or notification.get("type") != "agent-turn-complete":
         return None
     session_id = notification.get("thread-id", notification.get("thread_id"))
     if not isinstance(session_id, str) or not session_id.strip():
         return None
-    payload = {
-        "version": PROTOCOL_VERSION,
-        "pane_id": pane_id,
-        "session_id": session_id,
-        "state": "done",
-        "updated_at_ms": time.time_ns() // 1_000_000,
-        "event": "agent_turn_complete",
-    }
     turn_id = notification.get("turn-id", notification.get("turn_id"))
-    if isinstance(turn_id, str) and turn_id.strip():
-        payload["turn_id"] = turn_id
-    return payload
-
-
-def publish_payload(payload: dict[str, Any]) -> None:
-    try:
-        subprocess.run(
-            [
-                "zellij",
-                "pipe",
-                "--name",
-                PIPE_NAME,
-                "--",
-                json.dumps(payload, separators=(",", ":")),
-            ],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
+    return AgentUpdate(
+        session_id=session_id,
+        state="done",
+        event="agent_turn_complete",
+        turn_id=turn_id if isinstance(turn_id, str) and turn_id.strip() else None,
+    )
 
 
 def forward_notification(command: list[str], raw_notification: str) -> None:
@@ -105,14 +79,9 @@ def main() -> int:
     if parsed is None:
         return 0
     forward_command, raw_notification = parsed
-    pane_id = os.environ.get("ZELLIJ_PANE_ID", "").strip()
-    if pane_id:
-        payload = build_done_payload(raw_notification, pane_id)
-        if payload is not None:
-            zellij_pid = find_zellij_ancestor()
-            if zellij_pid is not None:
-                persist_payload(payload, zellij_pid)
-            publish_payload(payload)
+    update = build_done_update(raw_notification)
+    if update is not None:
+        dispatch_update(update)
     forward_notification(forward_command, raw_notification)
     return 0
 

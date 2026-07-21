@@ -14,31 +14,29 @@ SPEC.loader.exec_module(AGENT_NOTIFY)
 
 class AgentNotifyTests(unittest.TestCase):
     def test_builds_done_from_turn_complete(self):
-        payload = AGENT_NOTIFY.build_done_payload(
-            json.dumps({"type": "agent-turn-complete", "thread-id": "thread"}), "7"
+        update = AGENT_NOTIFY.build_done_update(
+            json.dumps({"type": "agent-turn-complete", "thread-id": "thread"})
         )
-        self.assertEqual(payload["pane_id"], "7")
-        self.assertEqual(payload["session_id"], "thread")
-        self.assertEqual(payload["state"], "done")
-        self.assertEqual(payload["event"], "agent_turn_complete")
+        self.assertEqual(update.session_id, "thread")
+        self.assertEqual(update.state, "done")
+        self.assertEqual(update.event, "agent_turn_complete")
 
     def test_preserves_notification_turn_identity_when_available(self):
-        payload = AGENT_NOTIFY.build_done_payload(
+        update = AGENT_NOTIFY.build_done_update(
             json.dumps(
                 {
                     "type": "agent-turn-complete",
                     "thread-id": "thread",
                     "turn-id": "turn-1",
                 }
-            ),
-            "7",
+            )
         )
-        self.assertEqual(payload["turn_id"], "turn-1")
+        self.assertEqual(update.turn_id, "turn-1")
 
     def test_ignores_other_or_invalid_notifications(self):
-        self.assertIsNone(AGENT_NOTIFY.build_done_payload("not-json", "7"))
+        self.assertIsNone(AGENT_NOTIFY.build_done_update("not-json"))
         self.assertIsNone(
-            AGENT_NOTIFY.build_done_payload(json.dumps({"type": "other"}), "7")
+            AGENT_NOTIFY.build_done_update(json.dumps({"type": "other"}))
         )
 
     def test_splits_forward_command_without_modifying_payload(self):
@@ -64,14 +62,13 @@ class AgentNotifyTests(unittest.TestCase):
         with (
             patch.object(AGENT_NOTIFY.sys, "argv", ["agent_notify.py", raw]),
             patch.dict(AGENT_NOTIFY.os.environ, {"ZELLIJ_PANE_ID": "7"}),
-            patch.object(AGENT_NOTIFY, "find_zellij_ancestor", return_value=123),
-            patch.object(AGENT_NOTIFY, "persist_payload") as persist,
-            patch.object(AGENT_NOTIFY, "publish_payload") as publish,
+            patch.object(AGENT_NOTIFY, "dispatch_update") as dispatch,
         ):
             self.assertEqual(AGENT_NOTIFY.main(), 0)
-        self.assertEqual(persist.call_args.args[0]["state"], "done")
-        self.assertEqual(persist.call_args.args[1], 123)
-        self.assertEqual(publish.call_args.args[0], persist.call_args.args[0])
+        update = dispatch.call_args.args[0]
+        self.assertEqual(update.session_id, "thread")
+        self.assertEqual(update.state, "done")
+        self.assertEqual(update.event, "agent_turn_complete")
 
 
 if __name__ == "__main__":

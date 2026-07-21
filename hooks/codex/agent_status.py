@@ -20,17 +20,26 @@ import tempfile
 import time
 from typing import Any, BinaryIO
 
+COMMON_DIRECTORY = Path(__file__).resolve().parent.parent / "common"
+if COMMON_DIRECTORY.is_dir():
+    sys.path.insert(0, str(COMMON_DIRECTORY))
+
 try:
-    from status_store import apply_payload as persist_payload
+    from agent_bridge import AgentUpdate
+    from agent_bridge import dispatch_update
+    from agent_bridge import snapshot_for_argument
     from status_store import journal_root
     from status_store import parse_positive_pid
     from status_store import process_is_running
-    from status_store import prune_dead_server_directories
     from status_store import server_directory
-    from status_store import snapshot_json
 except ImportError:
-    def persist_payload(_payload: object, _zellij_pid: int) -> bool:
-        return False
+    AgentUpdate = None
+
+    def dispatch_update(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def snapshot_for_argument(_value: object) -> None:
+        return None
 
     def parse_positive_pid(_value: object) -> int | None:
         return None
@@ -38,21 +47,12 @@ except ImportError:
     def process_is_running(_pid: int) -> bool:
         return False
 
-    def prune_dead_server_directories(_current_zellij_pid: int) -> int:
-        return 0
-
     def journal_root() -> Path:
         return Path(tempfile.gettempdir()) / "zellij-vertical-tab"
 
     def server_directory(_zellij_pid: int) -> Path | None:
         return None
 
-    def snapshot_json(_zellij_pid: int) -> str | None:
-        return None
-
-
-PIPE_NAME = "vertical-tab-agent-status"
-PROTOCOL_VERSION = 1
 EVENT_STATES = {
     "SessionStart": "idle",
     "UserPromptSubmit": "working",
@@ -108,59 +108,38 @@ def approvals_reviewer_for_turn(
         return None
 
 
-def build_payload(hook_input: dict[str, Any], pane_id: str) -> dict[str, Any] | None:
+def build_update(hook_input: dict[str, Any]) -> Any | None:
     hook_event = hook_input.get("hook_event_name")
     state = EVENT_STATES.get(hook_event)
     session_id = hook_input.get("session_id")
-    if state is None or not isinstance(session_id, str) or not session_id.strip():
+    if (
+        AgentUpdate is None
+        or state is None
+        or not isinstance(session_id, str)
+        or not session_id.strip()
+    ):
         return None
     turn_id = hook_input.get("turn_id")
     if hook_event == "PermissionRequest" and approvals_reviewer_for_turn(
         hook_input.get("transcript_path"), turn_id
     ) == "auto_review":
         state = "working"
-    payload = {
-        "version": PROTOCOL_VERSION,
-        "pane_id": pane_id,
-        "session_id": session_id,
-        "state": state,
-        "updated_at_ms": time.time_ns() // 1_000_000,
-        "event": EVENT_NAMES[hook_event],
-    }
-    if isinstance(turn_id, str) and turn_id.strip():
-        payload["turn_id"] = turn_id
-    return payload
+    return AgentUpdate(
+        session_id=session_id,
+        state=state,
+        event=EVENT_NAMES[hook_event],
+        turn_id=turn_id if isinstance(turn_id, str) and turn_id.strip() else None,
+    )
 
 
-def build_clear_payload(pane_id: str, session_id: str) -> dict[str, Any]:
-    return {
-        "version": PROTOCOL_VERSION,
-        "pane_id": pane_id,
-        "session_id": session_id,
-        "state": "clear",
-        "updated_at_ms": time.time_ns() // 1_000_000,
-        "event": "session_exit",
-    }
-
-
-def publish_payload(payload: dict[str, Any]) -> None:
-    try:
-        subprocess.run(
-            [
-                "zellij",
-                "pipe",
-                "--name",
-                PIPE_NAME,
-                "--",
-                json.dumps(payload, separators=(",", ":")),
-            ],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
+def build_clear_update(session_id: str) -> Any | None:
+    if AgentUpdate is None:
+        return None
+    return AgentUpdate(
+        session_id=session_id,
+        state="clear",
+        event="session_exit",
+    )
 
 
 def process_info(pid: int) -> tuple[int, str] | None:
@@ -344,10 +323,14 @@ def watch_process(
         metadata = read_watcher_metadata(pid, zellij_pid)
         if metadata is not None:
             pane_id, session_id, zellij_pid = metadata
-        payload = build_clear_payload(pane_id, session_id)
-        if zellij_pid is not None:
-            persist_payload(payload, zellij_pid)
-        publish_payload(payload)
+        update = build_clear_update(session_id)
+        if update is not None:
+            dispatch_update(
+                update,
+                pane_id,
+                zellij_pid,
+                discover_zellij=False,
+            )
     finally:
         if lock_file is not None:
             lock_file.close()
@@ -391,11 +374,9 @@ def main() -> int:
         return 0
 
     if len(sys.argv) == 3 and sys.argv[1] == "--snapshot":
-        zellij_pid = parse_positive_pid(sys.argv[2])
-        if zellij_pid is not None:
-            snapshot = snapshot_json(zellij_pid)
-            if snapshot is not None:
-                print(snapshot)
+        snapshot = snapshot_for_argument(sys.argv[2])
+        if snapshot is not None:
+            print(snapshot)
         return 0
 
     pane_id = os.environ.get("ZELLIJ_PANE_ID", "").strip()
@@ -409,15 +390,19 @@ def main() -> int:
     if not isinstance(hook_input, dict):
         return 0
 
-    payload = build_payload(hook_input, pane_id)
-    if payload is None:
+    update = build_update(hook_input)
+    if update is None:
         return 0
     zellij_pid, codex_pid = find_process_ancestors()
-    if hook_input.get("hook_event_name") == "SessionStart" and zellij_pid is not None:
-        prune_dead_server_directories(zellij_pid)
-    if zellij_pid is not None:
-        persist_payload(payload, zellij_pid)
-    publish_payload(payload)
+    payload = dispatch_update(
+        update,
+        pane_id,
+        zellij_pid,
+        discover_zellij=False,
+        prune_dead=hook_input.get("hook_event_name") == "SessionStart",
+    )
+    if payload is None:
+        return 0
     if hook_input.get("hook_event_name") == "SessionStart":
         if codex_pid is not None:
             start_exit_watcher(codex_pid, pane_id, payload["session_id"], zellij_pid)

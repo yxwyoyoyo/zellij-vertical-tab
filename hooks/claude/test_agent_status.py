@@ -15,11 +15,11 @@ SPEC.loader.exec_module(AGENT_STATUS)
 
 
 class ClaudeAgentStatusHookTests(unittest.TestCase):
-    def payload_for(self, event: str, prompt_id: str | None = "prompt-1"):
+    def update_for(self, event: str, prompt_id: str | None = "prompt-1"):
         hook_input = {"hook_event_name": event, "session_id": "session"}
         if prompt_id is not None:
             hook_input["prompt_id"] = prompt_id
-        return AGENT_STATUS.build_payload(hook_input, "7")
+        return AGENT_STATUS.build_update(hook_input)
 
     def test_lifecycle_mapping(self):
         expected = {
@@ -34,49 +34,40 @@ class ClaudeAgentStatusHookTests(unittest.TestCase):
             "SessionEnd": "clear",
         }
         self.assertEqual(
-            {event: self.payload_for(event)["state"] for event in expected},
+            {event: self.update_for(event).state for event in expected},
             expected,
         )
 
     def test_prompt_id_becomes_turn_identity(self):
-        payload = self.payload_for("PostToolUse", "prompt-1")
-        self.assertEqual(payload["turn_id"], "prompt-1")
-        self.assertNotIn("turn_id", self.payload_for("PostToolUse", ""))
+        update = self.update_for("PostToolUse", "prompt-1")
+        self.assertEqual(update.turn_id, "prompt-1")
+        self.assertIsNone(self.update_for("PostToolUse", "").turn_id)
 
     def test_session_end_is_matching_session_clear(self):
-        payload = self.payload_for("SessionEnd")
-        self.assertEqual(payload["session_id"], "session")
-        self.assertEqual(payload["event"], "session_exit")
-        self.assertNotIn("turn_id", payload)
+        update = self.update_for("SessionEnd")
+        self.assertEqual(update.session_id, "session")
+        self.assertEqual(update.event, "session_exit")
+        self.assertIsNone(update.turn_id)
 
     def test_invalid_input_and_unknown_events_are_ignored(self):
-        self.assertIsNone(AGENT_STATUS.build_payload({}, "7"))
+        self.assertIsNone(AGENT_STATUS.build_update({}))
         self.assertIsNone(
-            AGENT_STATUS.build_payload(
-                {"hook_event_name": "Unknown", "session_id": "session"}, "7"
+            AGENT_STATUS.build_update(
+                {"hook_event_name": "Unknown", "session_id": "session"}
             )
         )
         self.assertIsNone(
-            AGENT_STATUS.build_payload(
-                {"hook_event_name": "Stop", "session_id": ""}, "7"
+            AGENT_STATUS.build_update(
+                {"hook_event_name": "Stop", "session_id": ""}
             )
         )
 
-    def test_process_hook_persists_before_publishing(self):
-        calls = []
-        with (
-            patch.object(AGENT_STATUS, "find_zellij_ancestor", return_value=123),
-            patch.object(
-                AGENT_STATUS,
-                "persist_payload",
-                side_effect=lambda payload, pid: calls.append(("persist", payload, pid)),
-            ),
-            patch.object(
-                AGENT_STATUS,
-                "publish_payload",
-                side_effect=lambda payload: calls.append(("publish", payload)),
-            ),
-        ):
+    def test_process_hook_dispatches_normalized_update(self):
+        with patch.object(
+            AGENT_STATUS,
+            "dispatch_update",
+            return_value={"state": "done"},
+        ) as dispatch:
             self.assertTrue(
                 AGENT_STATUS.process_hook(
                     {
@@ -87,9 +78,12 @@ class ClaudeAgentStatusHookTests(unittest.TestCase):
                     "7",
                 )
             )
-        self.assertEqual([call[0] for call in calls], ["persist", "publish"])
-        self.assertEqual(calls[0][2], 123)
-        self.assertEqual(calls[0][1], calls[1][1])
+        update = dispatch.call_args.args[0]
+        self.assertEqual(update.session_id, "session")
+        self.assertEqual(update.state, "done")
+        self.assertEqual(update.event, "stop")
+        self.assertEqual(update.turn_id, "prompt-1")
+        self.assertEqual(dispatch.call_args.args[1], "7")
 
     def test_permission_and_final_stop_emit_bell(self):
         expected = {"terminalSequence": "\a"}
@@ -133,19 +127,19 @@ class ClaudeAgentStatusHookTests(unittest.TestCase):
         with (
             patch.dict(os.environ, {}, clear=True),
             patch.object(AGENT_STATUS.sys, "stdin", io.StringIO("not json")),
-            patch.object(AGENT_STATUS, "publish_payload") as publish,
+            patch.object(AGENT_STATUS, "dispatch_update") as dispatch,
         ):
             self.assertEqual(AGENT_STATUS.main(), 0)
-        publish.assert_not_called()
+        dispatch.assert_not_called()
 
     def test_malformed_input_never_fails_hook(self):
         with (
             patch.dict(os.environ, {"ZELLIJ_PANE_ID": "7"}, clear=True),
             patch.object(AGENT_STATUS.sys, "stdin", io.StringIO("not json")),
-            patch.object(AGENT_STATUS, "publish_payload") as publish,
+            patch.object(AGENT_STATUS, "dispatch_update") as dispatch,
         ):
             self.assertEqual(AGENT_STATUS.main(), 0)
-        publish.assert_not_called()
+        dispatch.assert_not_called()
 
     def test_settings_template_is_valid_and_covers_supported_events(self):
         settings = json.loads(Path(__file__).with_name("settings.json").read_text())

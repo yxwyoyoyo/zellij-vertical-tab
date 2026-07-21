@@ -24,7 +24,7 @@ The [architecture guide](architecture.md) explains the flattened row model, pane
 mise trust
 mise install
 mise run setup # once: WASM target, OpenSpec, and OpenWiki
-mise run test  # Rust host tests + Codex and Claude Code bridge tests
+mise run test  # Rust host tests + common, Codex, and Claude bridge tests
 mise run dev   # build debug WASM and launch zellij.kdl
 ```
 
@@ -61,7 +61,8 @@ See [architecture constraints](architecture.md#runtime-and-layout-constraints) f
 | Path | Role | Start here when… |
 | --- | --- | --- |
 | `src/main.rs` | Plugin state, Zellij lifecycle, adaptive rows, status synchronization, formatting, input, and Rust unit tests | Changing runtime or UI behavior |
-| `hooks/codex/` | Codex lifecycle/completion bridges, durable host journal, hook template, and Python tests | Changing Codex publication, recovery, or installation |
+| `hooks/common/` | Immutable `AgentUpdate` contract, version-1 transport, durable host journal, and Python contract tests | Changing shared publication, recovery, or the adapter interface |
+| `hooks/codex/` | Codex lifecycle/completion adapters, hook template, and native-behavior tests | Changing Codex mapping, watcher, notifier, or installation |
 | `hooks/claude/` | Claude Code lifecycle/attention bridge, user settings template, and Python tests | Changing Claude publication, notification, or installation |
 | `openspec/specs/` | Current behavior contracts for the sidebar and agent status | Checking intended product behavior |
 | `openspec/changes/archive/` | Archived proposals, designs, deltas, and completion evidence | Understanding why status, badges, ellipsis, or pane hierarchy changed |

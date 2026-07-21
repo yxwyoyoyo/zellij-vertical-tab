@@ -66,8 +66,9 @@ not reconstruct pane geometry.
 1. Start from a clean, current `main` and create a feature branch.
 2. For user-visible behavior, create an OpenSpec change before implementation.
    Keep proposal, delta specs, design, and tasks aligned as decisions change.
-3. Implement one coherent slice and add pure host tests beside `src/main.rs` or
-   bridge tests under `hooks/codex/` and `hooks/claude/`.
+3. Implement one coherent slice and add pure host tests beside `src/main.rs`,
+   common bridge tests under `hooks/common/`, or native adapter tests under
+   `hooks/codex/` and `hooks/claude/`.
 4. Run `mise run test` during iteration and `mise run reload` for live UI
    feedback. Always rebuild before interpreting a runtime result.
 5. Run the full local gate before review:
@@ -184,7 +185,7 @@ mise tasks ls
 ```
 
 - `setup` — install the WASM target and pinned project CLIs
-- `test` — Rust unit tests plus Codex and Claude Code Python bridge tests
+- `test` — Rust unit tests plus common, Codex, and Claude Code Python bridge tests
 - `build` — debug WASM
 - `spec` — strict OpenSpec validation
 - `check` — formatting, tests, Clippy, debug WASM, OpenSpec, and diff hygiene
@@ -195,3 +196,16 @@ mise tasks ls
 
 Crash-derived invariants and the headless PTY recipe remain in `AGENTS.md` and
 `tasks/lessons.md`.
+
+## Agent adapter contract
+
+`hooks/common/agent_bridge.py` is the required boundary for supported agents.
+Adapters translate native hook data into `AgentUpdate`; the common runtime owns
+pane lookup, timestamps, protocol validation, durable journal ordering, Zellij
+publication, dead-server pruning, and recovery snapshots. Keep optional native
+behavior in the adapter rather than growing the common type around one vendor.
+
+Repository imports resolve `hooks/common/` directly. User installation copies
+`agent_bridge.py` and `status_store.py` beside each enabled adapter, preserving
+standalone hooks without a Python package or virtual environment. Any bridge
+update must deploy both common files to every enabled agent directory.

@@ -1,7 +1,7 @@
 ---
 type: Architecture Guide
 title: Plugin Architecture and Domain Model
-description: Runtime architecture of the pane-aware Zellij sidebar, covering native nested-list rendering, pane-owned Codex and Claude Code status, leader-based peer synchronization, bounded same-server recovery, input, and Zellij-owned mouse-resizable layout constraints.
+description: Runtime architecture of the pane-aware Zellij sidebar and common Python agent bridge, covering native nested-list rendering, pane-owned Codex and Claude Code status, synchronization, bounded same-server recovery, input, and layout constraints.
 resource: src/main.rs
 tags: [architecture, zellij, rust, wasm, codex, claude-code, panes]
 ---
@@ -15,8 +15,8 @@ The plugin is one Rust binary compiled to `wasm32-wasip1`. Zellij owns tabs, pan
 ```text
 TabUpdate ───────────────> tabs / active tab
 PaneUpdate ──────────────> pane ownership + ordered terminal metadata + peers
-Codex/Claude hooks ──host journal + Zellij broadcast pipe──> pane-keyed AgentRecord in every sidebar
-             server-sharded plugin /cache <──── runtime restart ────────┘
+Codex/Claude adapters ──AgentUpdate──> common bridge ──host journal + Zellij broadcast pipe──> pane-keyed AgentRecord
+                                                    server-sharded plugin /cache <──── runtime restart ────────┘
 Focus changes ──nonleader report──> lowest-ID leader ──bounded fanout──> sidebar peers
 Codex TUI / Claude hook output ──BEL> Zellij visual bell ──TabInfo.has_bell_notification──> tab attention icon
                                       │
@@ -70,7 +70,7 @@ Because the same row objects expose both presentation state and `RowTarget`, hie
 
 ## Per-pane agent status and synchronization
 
-The [Codex](development.md#codex-bridge-installation) and [Claude Code](development.md#claude-code-bridge-installation) bridge workflows publish version-1 JSON on `vertical-tab-agent-status` with pane ID, session ID, state, millisecond timestamp, and optional normalized lifecycle event and turn identity. Claude copies a non-empty prompt ID into the protocol turn ID; Codex derives turn identity from its lifecycle context. States are `idle`, `working`, `waiting`, `done`, and `clear`; their visible glyphs use dim, cyan emphasis, orange emphasis, and success styling respectively. Codex uses transcript context to keep auto-reviewed permission requests working, while Claude maps a visible `PermissionRequest` to waiting. Claude's `PostToolUse`, `PostToolUseFailure`, and `PermissionDenied` events return to working. Within one turn or prompt, done is terminal against delayed tool and permission events; a new `UserPromptSubmit` reopens the session as working. Legacy version-1 records without optional lifecycle metadata remain valid.
+The [Codex](development.md#codex-bridge-installation) and [Claude Code](development.md#claude-code-bridge-installation) adapters map native events into `AgentUpdate`; the [common adapter runtime](development.md#common-agent-adapter-interface) publishes version-1 JSON on `vertical-tab-agent-status` with pane ID, session ID, state, millisecond timestamp, and optional normalized lifecycle event and turn identity. Claude copies a non-empty prompt ID into the protocol turn ID; Codex derives turn identity from its lifecycle context. States are `idle`, `working`, `waiting`, `done`, and `clear`; their visible glyphs use dim, cyan emphasis, orange emphasis, and success styling respectively. Codex uses transcript context to keep auto-reviewed permission requests working, while Claude maps a visible `PermissionRequest` to waiting. Claude's `PostToolUse`, `PostToolUseFailure`, and `PermissionDenied` events return to working. Within one turn or prompt, done is terminal against delayed tool and permission events; a new `UserPromptSubmit` reopens the session as working. Legacy version-1 records without optional lifecycle metadata remain valid.
 
 For Claude Code 2.1.141 or newer, the same command hook returns a single BEL through top-level `terminalSequence` output on `PermissionRequest` and final `Stop`. A `Stop` with `stop_hook_active: true` emits no attention because Claude is continuing. This output does not approve, deny, or block the hook. Zellij owns the resulting tab-scoped native bell while lifecycle status remains pane-scoped.
 
@@ -105,7 +105,7 @@ A newly discovered peer still receives a sync request and the sender's current f
 
 ### Durable recovery
 
-The Python bridges use the same `status_store.py` to write each validated lifecycle event before pipe publication. Records are isolated by Zellij server PID and terminal pane, serialized under an advisory per-pane lock, ordered by timestamp, session, turn, and terminal-completion rules, and replaced atomically. Codex starts one locked PID watcher because it has no session-end hook; Claude Code instead emits a matching-session clear from `SessionEnd`. Session start also prunes only numeric host-journal shards whose PID is demonstrably absent. This host journal remains available when a detached session has no plugin runtime to receive an undirected pipe (`hooks/codex/`, `hooks/claude/`).
+Agent-specific entrypoints normalize native hook data into `AgentUpdate`, then `hooks/common/agent_bridge.py` obtains the pane ID and timestamp, validates the version-1 payload, persists it through `hooks/common/status_store.py`, and publishes it to Zellij. Records are isolated by Zellij server PID and terminal pane, serialized under an advisory per-pane lock, ordered by timestamp, session, turn, and terminal-completion rules, and replaced atomically. Codex starts one locked PID watcher because it has no session-end hook; Claude Code instead emits a matching-session clear from `SessionEnd`. Session start also prunes only numeric host-journal shards whose PID is demonstrably absent. This host journal remains available when a detached session has no plugin runtime to receive an undirected pipe (`hooks/common/`, `hooks/codex/`, `hooks/claude/`).
 
 Every plugin mutation also serializes lifecycle records and exact acknowledgement references to `/cache/agent-status-<zellij-pid>/agent-status-<plugin-id>.json`. On `load()`, an instance scans only bounded, well-formed files in its current server shard and merges them through the normal timestamp, session, turn, and terminal-completion rules. If that shard does not yet exist, the first updated instance reads compatible legacy flat files for the current server and persists their merged state into the shard; the shard then prevents later restores from rescanning flat history. It deliberately does not restore `focused_terminal_panes`, so runtime startup cannot fabricate a focus transition or acknowledge an unseen completion.
 
@@ -153,8 +153,9 @@ Layout geometry is created when Zellij builds the tab. Hot reload cannot convert
 ## Integration points and safe changes
 
 - **Zellij ABI:** `zellij-tile = 0.44.3` supplies lifecycle, pane metadata, pipes, peer messages, rendering, and focus/switch APIs.
-- **Codex hooks:** `hooks/codex/agent_status.py` maps lifecycle hooks, coordinates one locked exit watcher per Codex PID, and serves recovery snapshots; `agent_notify.py` covers `agent-turn-complete` paths and can forward an existing notifier.
-- **Claude Code hooks:** `hooks/claude/agent_status.py` maps prompt, tool, permission, stop, and session-end hooks, uses prompt identity for terminal-completion ordering, and serves the same host snapshot shape. Both agents journal through the shared `status_store.py` implementation before pipe publication.
+- **Common agent bridge:** `hooks/common/agent_bridge.py` defines `AgentUpdate` and owns version-1 construction, validation, persistence-before-publication, Zellij transport, pruning, and snapshot delegation; `hooks/common/status_store.py` owns durable ordering. The [installation and extension contract](development.md#common-agent-adapter-interface) keeps both modules colocated with each adapter.
+- **Codex hooks:** `hooks/codex/agent_status.py` maps lifecycle hooks and coordinates one locked exit watcher per Codex PID; `agent_notify.py` maps `agent-turn-complete` and can forward an existing notifier. Both dispatch through the common bridge.
+- **Claude Code hooks:** `hooks/claude/agent_status.py` maps prompt, tool, permission, stop, and session-end hooks, uses prompt identity for terminal-completion ordering, and retains native terminal-sequence output while dispatching lifecycle updates through the common bridge.
 - **OpenSpec:** baseline requirements live under `openspec/specs/`. The Claude adapter rationale and completion evidence are archived at `openspec/changes/archive/2026-07-21-add-claude-code-agent-status/`, and the accepted native-list rationale remains at `openspec/changes/archive/2026-07-19-refresh-zellij-native-sidebar-ui/`.
 - **Theme/font:** Zellij's native nested-list renderer resolves selected/unselected list styling, while semantic item ranges color badges; Nerd Font Mono supplies single-cell status glyph metrics.
 

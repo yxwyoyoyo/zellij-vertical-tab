@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Durable, dependency-free lifecycle journal for zellij-vertical-tab."""
+"""Durable, dependency-free lifecycle journal shared by agent adapters."""
 
 from __future__ import annotations
 
