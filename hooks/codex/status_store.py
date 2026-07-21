@@ -21,6 +21,8 @@ SUPPORTED_EVENTS = {
     "pre_tool_use",
     "permission_request",
     "post_tool_use",
+    "post_tool_use_failure",
+    "permission_denied",
     "stop",
     "agent_turn_complete",
     "session_exit",

@@ -1,0 +1,117 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Publishing agent status"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/agent_status.py\"",
+            "timeout": 5,
+            "statusMessage": "Clearing agent status"
+          }
+        ]
+      }
+    ]
+  }
+}
