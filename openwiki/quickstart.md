@@ -70,7 +70,7 @@ See [architecture constraints](architecture.md#runtime-and-layout-constraints) f
 | `Cargo.toml` | Binary target, ABI-sensitive dependency pin, and size-focused release profile | Changing packaging or dependencies |
 | `mise.toml` | Pinned tools and reproducible setup, test, build, check, reload, release, install, deploy, status, and docs tasks | Running or changing maintainer automation |
 | `scripts/` | Safe session-aware plugin reload and explicit known-state status republication | Changing runtime helpers or reload recovery |
-| `README.md` | User installation, Codex and Claude Code setup, and behavior | Updating public instructions |
+| `README.md` and `docs/agent-status.md` | Concise user install/behavior overview and detailed Codex, Claude Code, recovery, and adapter setup | Updating public or agent-integration instructions |
 | `AGENTS.md` and `DEVELOPMENT.md` | Canonical commands, feature/release workflow, PTY runbook, and crash-derived constraints | Preparing or validating a change |
 | `.github/workflows/openwiki-update.yml` | Scheduled/manual documentation update PR | Maintaining wiki automation |
 
