@@ -62,7 +62,8 @@ The repository includes a dependency-free Python bridge and user-level hook temp
 mkdir -p ~/.codex/hooks
 install -m 755 hooks/codex/agent_status.py ~/.codex/hooks/agent_status.py
 install -m 755 hooks/codex/agent_notify.py ~/.codex/hooks/agent_notify.py
-install -m 644 hooks/codex/status_store.py ~/.codex/hooks/status_store.py
+install -m 644 hooks/common/agent_bridge.py ~/.codex/hooks/agent_bridge.py
+install -m 644 hooks/common/status_store.py ~/.codex/hooks/status_store.py
 install -m 644 hooks/codex/hooks.json ~/.codex/hooks.json
 ```
 
@@ -119,7 +120,8 @@ user-level Claude configuration directory:
 ```sh
 mkdir -p ~/.claude/hooks
 install -m 755 hooks/claude/agent_status.py ~/.claude/hooks/agent_status.py
-install -m 644 hooks/codex/status_store.py ~/.claude/hooks/status_store.py
+install -m 644 hooks/common/agent_bridge.py ~/.claude/hooks/agent_bridge.py
+install -m 644 hooks/common/status_store.py ~/.claude/hooks/status_store.py
 ```
 
 Merge the `hooks` object from `hooks/claude/settings.json` into
@@ -151,6 +153,20 @@ same badges and colors, and the UI deliberately does not add an agent-name
 prefix. Their records remain isolated by Zellij server, terminal pane, agent
 session, prompt or turn identity, and timestamp. Either installed bridge can
 serve the shared host-journal snapshot used after detach or plugin reload.
+
+### Adding another agent
+
+Agent integrations are adapters over `hooks/common/agent_bridge.py`. An adapter
+maps its native hook input into an immutable `AgentUpdate` containing a session
+ID, canonical state, canonical lifecycle event, and optional turn ID. The
+common runtime owns `ZELLIJ_PANE_ID`, timestamps, validation, journal-before-pipe
+ordering, publication, pruning, and snapshot recovery. Agent-specific behavior
+such as Codex notifier forwarding or Claude `terminalSequence` output stays in
+the adapter.
+
+Copy `agent_bridge.py` and `status_store.py` beside every installed adapter so
+the integration remains dependency-free. A new adapter should not construct
+the version-1 wire payload or invoke `zellij pipe` itself.
 
 ## Install for everyday use
 

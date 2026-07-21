@@ -15,21 +15,19 @@ SPEC.loader.exec_module(AGENT_STATUS)
 
 
 class AgentStatusHookTests(unittest.TestCase):
-    def payload_for(self, event: str, turn_id: str | None = None):
+    def update_for(self, event: str, turn_id: str | None = None):
         hook_input = {"hook_event_name": event, "session_id": "session"}
         if turn_id is not None:
             hook_input["turn_id"] = turn_id
-        return AGENT_STATUS.build_payload(
-            hook_input, "7"
-        )
+        return AGENT_STATUS.build_update(hook_input)
 
     def test_lifecycle_mapping(self):
-        self.assertEqual(self.payload_for("SessionStart")["state"], "idle")
-        self.assertEqual(self.payload_for("UserPromptSubmit")["state"], "working")
-        self.assertEqual(self.payload_for("PreToolUse")["state"], "working")
-        self.assertEqual(self.payload_for("PostToolUse")["state"], "working")
-        self.assertEqual(self.payload_for("PermissionRequest")["state"], "waiting")
-        self.assertEqual(self.payload_for("Stop")["state"], "done")
+        self.assertEqual(self.update_for("SessionStart").state, "idle")
+        self.assertEqual(self.update_for("UserPromptSubmit").state, "working")
+        self.assertEqual(self.update_for("PreToolUse").state, "working")
+        self.assertEqual(self.update_for("PostToolUse").state, "working")
+        self.assertEqual(self.update_for("PermissionRequest").state, "waiting")
+        self.assertEqual(self.update_for("Stop").state, "done")
 
     def test_auto_review_permission_remains_working(self):
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as transcript:
@@ -46,17 +44,16 @@ class AgentStatusHookTests(unittest.TestCase):
                 + "\n"
             )
             transcript.flush()
-            payload = AGENT_STATUS.build_payload(
+            update = AGENT_STATUS.build_update(
                 {
                     "hook_event_name": "PermissionRequest",
                     "session_id": "session",
                     "turn_id": "turn-1",
                     "transcript_path": transcript.name,
                 },
-                "7",
             )
-        self.assertEqual(payload["state"], "working")
-        self.assertEqual(payload["event"], "permission_request")
+        self.assertEqual(update.state, "working")
+        self.assertEqual(update.event, "permission_request")
 
     def test_manual_or_unreadable_permission_waits(self):
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as transcript:
@@ -73,26 +70,24 @@ class AgentStatusHookTests(unittest.TestCase):
                 + "\n"
             )
             transcript.flush()
-            manual = AGENT_STATUS.build_payload(
+            manual = AGENT_STATUS.build_update(
                 {
                     "hook_event_name": "PermissionRequest",
                     "session_id": "session",
                     "turn_id": "turn-1",
                     "transcript_path": transcript.name,
                 },
-                "7",
             )
-        unreadable = AGENT_STATUS.build_payload(
+        unreadable = AGENT_STATUS.build_update(
             {
                 "hook_event_name": "PermissionRequest",
                 "session_id": "session",
                 "turn_id": "turn-1",
                 "transcript_path": "/missing/transcript.jsonl",
             },
-            "7",
         )
-        self.assertEqual(manual["state"], "waiting")
-        self.assertEqual(unreadable["state"], "waiting")
+        self.assertEqual(manual.state, "waiting")
+        self.assertEqual(unreadable.state, "waiting")
 
     def test_reviewer_lookup_uses_matching_turn(self):
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as transcript:
@@ -119,17 +114,15 @@ class AgentStatusHookTests(unittest.TestCase):
             )
 
     def test_includes_normalized_event_and_non_empty_turn_identity(self):
-        payload = self.payload_for("PostToolUse", "turn-1")
-        self.assertEqual(payload["event"], "post_tool_use")
-        self.assertEqual(payload["turn_id"], "turn-1")
-        self.assertNotIn("turn_id", self.payload_for("PostToolUse", ""))
+        update = self.update_for("PostToolUse", "turn-1")
+        self.assertEqual(update.event, "post_tool_use")
+        self.assertEqual(update.turn_id, "turn-1")
+        self.assertIsNone(self.update_for("PostToolUse", "").turn_id)
 
     def test_invalid_input_is_ignored(self):
-        self.assertIsNone(AGENT_STATUS.build_payload({}, "7"))
+        self.assertIsNone(AGENT_STATUS.build_update({}))
         self.assertIsNone(
-            AGENT_STATUS.build_payload(
-                {"hook_event_name": "Stop", "session_id": ""}, "7"
-            )
+            AGENT_STATUS.build_update({"hook_event_name": "Stop", "session_id": ""})
         )
 
     def test_finds_codex_and_zellij_ancestors_in_one_traversal(self):
@@ -153,18 +146,17 @@ class AgentStatusHookTests(unittest.TestCase):
             ),
             patch.object(AGENT_STATUS, "wait_for_process_exit") as wait,
             patch.object(AGENT_STATUS, "read_watcher_metadata", return_value=None),
-            patch.object(AGENT_STATUS, "persist_payload") as persist,
-            patch.object(AGENT_STATUS, "publish_payload") as publish,
+            patch.object(AGENT_STATUS, "dispatch_update") as dispatch,
         ):
             AGENT_STATUS.watch_process(42, "7", "session", 123)
         wait.assert_called_once_with(42)
         lock_file.close.assert_called_once_with()
-        payload = publish.call_args.args[0]
-        self.assertEqual(payload["pane_id"], "7")
-        self.assertEqual(payload["session_id"], "session")
-        self.assertEqual(payload["state"], "clear")
-        self.assertEqual(payload["event"], "session_exit")
-        persist.assert_called_once_with(payload, 123)
+        update = dispatch.call_args.args[0]
+        self.assertEqual(update.session_id, "session")
+        self.assertEqual(update.state, "clear")
+        self.assertEqual(update.event, "session_exit")
+        self.assertEqual(dispatch.call_args.args[1:3], ("7", 123))
+        self.assertFalse(dispatch.call_args.kwargs["discover_zellij"])
 
     def test_duplicate_watcher_exits_without_waiting_or_clearing(self):
         with (
@@ -172,11 +164,11 @@ class AgentStatusHookTests(unittest.TestCase):
                 AGENT_STATUS, "acquire_watcher_lock", return_value=(None, False)
             ),
             patch.object(AGENT_STATUS, "wait_for_process_exit") as wait,
-            patch.object(AGENT_STATUS, "publish_payload") as publish,
+            patch.object(AGENT_STATUS, "dispatch_update") as dispatch,
         ):
             AGENT_STATUS.watch_process(42, "7", "session", 123)
         wait.assert_not_called()
-        publish.assert_not_called()
+        dispatch.assert_not_called()
 
     def test_repeated_start_refreshes_watcher_session_metadata(self):
         with tempfile.TemporaryDirectory() as directory:

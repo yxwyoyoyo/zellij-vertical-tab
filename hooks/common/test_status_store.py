@@ -1,3 +1,5 @@
+"""Contract tests for the common durable agent-status journal."""
+
 import json
 import os
 from pathlib import Path

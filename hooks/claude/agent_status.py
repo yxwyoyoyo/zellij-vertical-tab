@@ -10,36 +10,28 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+from pathlib import Path
 import sys
-import time
 from typing import Any
 
+COMMON_DIRECTORY = Path(__file__).resolve().parent.parent / "common"
+if COMMON_DIRECTORY.is_dir():
+    sys.path.insert(0, str(COMMON_DIRECTORY))
+
 try:
-    from status_store import apply_payload as persist_payload
-    from status_store import find_zellij_ancestor
-    from status_store import parse_positive_pid
-    from status_store import prune_dead_server_directories
-    from status_store import snapshot_json
+    from agent_bridge import AgentUpdate
+    from agent_bridge import dispatch_update
+    from agent_bridge import snapshot_for_argument
 except ImportError:
-    def persist_payload(_payload: object, _zellij_pid: int) -> bool:
-        return False
+    AgentUpdate = None
 
-    def find_zellij_ancestor(_start_pid: int | None = None) -> int | None:
+    def dispatch_update(*_args: object, **_kwargs: object) -> None:
         return None
 
-    def parse_positive_pid(_value: object) -> int | None:
-        return None
-
-    def prune_dead_server_directories(_current_zellij_pid: int) -> int:
-        return 0
-
-    def snapshot_json(_zellij_pid: int) -> str | None:
+    def snapshot_for_argument(_value: object) -> None:
         return None
 
 
-PIPE_NAME = "vertical-tab-agent-status"
-PROTOCOL_VERSION = 1
 BEL = "\a"
 EVENT_STATES = {
     "SessionStart": "idle",
@@ -63,74 +55,48 @@ EVENT_NAMES = {
 }
 
 
-def build_payload(hook_input: dict[str, Any], pane_id: str) -> dict[str, Any] | None:
+def build_update(hook_input: dict[str, Any]) -> Any | None:
     hook_event = hook_input.get("hook_event_name")
     session_id = hook_input.get("session_id")
-    if not isinstance(session_id, str) or not session_id.strip():
+    if (
+        AgentUpdate is None
+        or not isinstance(session_id, str)
+        or not session_id.strip()
+    ):
         return None
     if hook_event == "SessionEnd":
-        return build_clear_payload(pane_id, session_id)
+        return AgentUpdate(
+            session_id=session_id,
+            state="clear",
+            event="session_exit",
+        )
     state = EVENT_STATES.get(hook_event)
     if state is None:
         return None
-    payload = {
-        "version": PROTOCOL_VERSION,
-        "pane_id": pane_id,
-        "session_id": session_id,
-        "state": state,
-        "updated_at_ms": time.time_ns() // 1_000_000,
-        "event": EVENT_NAMES[hook_event],
-    }
     prompt_id = hook_input.get("prompt_id")
-    if isinstance(prompt_id, str) and prompt_id.strip():
-        payload["turn_id"] = prompt_id
-    return payload
-
-
-def build_clear_payload(pane_id: str, session_id: str) -> dict[str, Any]:
-    return {
-        "version": PROTOCOL_VERSION,
-        "pane_id": pane_id,
-        "session_id": session_id,
-        "state": "clear",
-        "updated_at_ms": time.time_ns() // 1_000_000,
-        "event": "session_exit",
-    }
-
-
-def publish_payload(payload: dict[str, Any]) -> None:
-    try:
-        subprocess.run(
-            [
-                "zellij",
-                "pipe",
-                "--name",
-                PIPE_NAME,
-                "--",
-                json.dumps(payload, separators=(",", ":")),
-            ],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
+    return AgentUpdate(
+        session_id=session_id,
+        state=state,
+        event=EVENT_NAMES[hook_event],
+        turn_id=(
+            prompt_id
+            if isinstance(prompt_id, str) and prompt_id.strip()
+            else None
+        ),
+    )
 
 
 def process_hook(hook_input: object, pane_id: str) -> bool:
     if not isinstance(hook_input, dict):
         return False
-    payload = build_payload(hook_input, pane_id)
-    if payload is None:
+    update = build_update(hook_input)
+    if update is None:
         return False
-    zellij_pid = find_zellij_ancestor()
-    if hook_input.get("hook_event_name") == "SessionStart" and zellij_pid is not None:
-        prune_dead_server_directories(zellij_pid)
-    if zellij_pid is not None:
-        persist_payload(payload, zellij_pid)
-    publish_payload(payload)
-    return True
+    return dispatch_update(
+        update,
+        pane_id,
+        prune_dead=hook_input.get("hook_event_name") == "SessionStart",
+    ) is not None
 
 
 def notification_output(hook_input: object) -> dict[str, str] | None:
@@ -147,11 +113,9 @@ def notification_output(hook_input: object) -> dict[str, str] | None:
 
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--snapshot":
-        zellij_pid = parse_positive_pid(sys.argv[2])
-        if zellij_pid is not None:
-            snapshot = snapshot_json(zellij_pid)
-            if snapshot is not None:
-                print(snapshot)
+        snapshot = snapshot_for_argument(sys.argv[2])
+        if snapshot is not None:
+            print(snapshot)
         return 0
 
     pane_id = os.environ.get("ZELLIJ_PANE_ID", "").strip()

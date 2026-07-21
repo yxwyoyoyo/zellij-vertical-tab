@@ -13,6 +13,7 @@ run = [
 description = "Run Rust unit tests and agent bridge tests"
 run = [
   "cargo test",
+  "python3 -m unittest discover -s hooks/common -p 'test_*.py'",
   "python3 -m unittest discover -s hooks/codex -p 'test_*.py'",
   "python3 -m unittest discover -s hooks/claude -p 'test_*.py'",
 ]
@@ -30,6 +31,7 @@ description = "Run the complete local pre-PR gate"
 run = [
   "cargo fmt -- --check",
   "cargo test",
+  "python3 -m unittest discover -s hooks/common -p 'test_*.py'",
   "python3 -m unittest discover -s hooks/codex -p 'test_*.py'",
   "python3 -m unittest discover -s hooks/claude -p 'test_*.py'",
   "cargo clippy --all-targets -- -D warnings",
