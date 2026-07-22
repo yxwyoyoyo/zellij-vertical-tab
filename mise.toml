@@ -1,6 +1,6 @@
 [tools]
 rust = "1.97.1"
-node = "26.5.0"
+node = "24.18.0"
 
 [tasks.setup]
 description = "Install the WASM target and project CLI tools"
