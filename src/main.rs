@@ -1624,6 +1624,36 @@ mod tests {
     }
 
     #[test]
+    fn render_preserves_rows_when_given_zero_height() {
+        // When Zellij calls render(0, cols) during re-attach layout
+        // recalculation, self.rows must retain its last known good
+        // value. Poisoning self.rows to 0 would disable ScrollDown and
+        // reset all viewport calculations in update() handlers.
+        let mut state = State {
+            tabs: vec![tab(0, "first", true), tab(1, "second", false)],
+            terminal_panes: HashMap::from([
+                (
+                    0,
+                    vec![terminal_pane(7, "first", false, false, false, 0, 0)],
+                ),
+                (
+                    1,
+                    vec![terminal_pane(8, "second", true, false, false, 0, 0)],
+                ),
+            ]),
+            rows: 10,
+            ..State::default()
+        };
+
+        state.render(0, 32);
+        assert_eq!(state.rows, 10);
+
+        // When a real height arrives later, render must accept it.
+        state.render(24, 32);
+        assert_eq!(state.rows, 24);
+    }
+
+    #[test]
     fn fit_pads_short_rows() {
         assert_eq!(fit_to_width("ab", 4), "ab  ");
     }
