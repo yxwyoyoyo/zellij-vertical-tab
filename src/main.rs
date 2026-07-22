@@ -574,7 +574,8 @@ impl ZellijPlugin for State {
                 }
                 Mouse::ScrollDown(_) => {
                     let row_count = self.sidebar_rows().len();
-                    let new_offset = clamp_offset(row_count, self.scroll_offset + 1, self.rows);
+                    let visible_rows = if self.rows == 0 { 1 } else { self.rows };
+                    let new_offset = clamp_offset(row_count, self.scroll_offset + 1, visible_rows);
                     std::mem::replace(&mut self.scroll_offset, new_offset) != new_offset
                 }
                 _ => false,
@@ -644,7 +645,7 @@ impl ZellijPlugin for State {
 
     fn render(&mut self, rows: usize, cols: usize) {
         let sidebar_rows = self.sidebar_rows();
-        if rows != self.rows {
+        if rows != self.rows && rows > 0 {
             self.rows = rows;
             self.scroll_offset = visible_window(
                 sidebar_rows.len(),
