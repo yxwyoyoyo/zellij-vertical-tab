@@ -57,7 +57,7 @@ Sidebar resizing is startup-sensitive. With Zellij mouse handling enabled (the
 default), drag the tiled boundary between the sidebar and content to change the
 sidebar width. Pane frames are optional: showing them makes the boundary
 visible, while hiding them leaves the same one-cell drag target. The width
-belongs to that tab only and a new tab starts at the layout's `13%` default.
+belongs to that tab only and a new tab starts at the layout's 32-column default.
 Test layout or resizing changes in a disposable fresh session; hot reload does
 not reconstruct pane geometry.
 

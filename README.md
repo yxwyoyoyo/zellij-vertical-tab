@@ -46,7 +46,7 @@ Add the sidebar to `~/.config/zellij/layouts/default.kdl`:
 layout {
     default_tab_template {
         pane split_direction="vertical" {
-            pane size="13%" borderless=true {
+            pane size=32 borderless=true {
                 plugin location="file:~/.config/zellij/plugins/zellij_vertical_tab.wasm"
             }
             pane {

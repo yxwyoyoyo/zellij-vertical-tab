@@ -28,7 +28,7 @@ mise run test  # Rust host tests + common, Codex, and Claude bridge tests
 mise run dev   # build debug WASM and launch zellij.kdl
 ```
 
-The development layout loads `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm` into a flexible pane that starts at **13%** of the terminal width. With normal Zellij mouse handling, start a fresh session and drag the tiled boundary between the sidebar and content to resize the sidebar. Pane frames are optional: showing them makes the boundary visible, while hiding them leaves the same one-cell drag target. Zellij owns that width per tab: it is not persisted or synchronized, and each new tab starts again at 13%. On first use, approve `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, `MessageAndLaunchOtherPlugins`, and `RunCommands`; the last three support agent messages, sidebar-instance synchronization, and detached-event recovery. See [the layout architecture](architecture.md#runtime-and-layout-constraints) and [fresh-session verification](development.md#runtime-verification) for the boundary and checks.
+The development layout loads `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm` into a pane that starts at a fixed **32 columns**, giving the sidebar consistent initial geometry across viewport sizes. With normal Zellij mouse handling, start a fresh session and drag the tiled boundary between the sidebar and content to resize the sidebar. Pane frames are optional: showing them makes the boundary visible, while hiding them leaves the same one-cell drag target. Zellij owns that width per tab: it is not persisted or synchronized, and each new tab starts again at 32 columns. On first use, approve `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, `MessageAndLaunchOtherPlugins`, and `RunCommands`; the last three support agent messages, sidebar-instance synchronization, and detached-event recovery. See [the layout architecture](architecture.md#runtime-and-layout-constraints) and [fresh-session verification](development.md#runtime-verification) for the boundary and checks.
 
 ## User-visible contract
 
@@ -66,7 +66,7 @@ See [architecture constraints](architecture.md#runtime-and-layout-constraints) f
 | `hooks/claude/` | Claude Code lifecycle/attention bridge, user settings template, and Python tests | Changing Claude publication, notification, or installation |
 | `openspec/specs/` | Current behavior contracts for the sidebar and agent status | Checking intended product behavior |
 | `openspec/changes/archive/` | Archived proposals, designs, deltas, and completion evidence | Understanding why status, badges, ellipsis, or pane hierarchy changed |
-| `zellij.kdl` | Development template with 13% flexible sidebar, sibling content pane, and status bar | Changing layout or launching locally |
+| `zellij.kdl` | Development template with a fixed 32-column initial sidebar, sibling content pane, and status bar | Changing layout or launching locally |
 | `Cargo.toml` | Binary target, ABI-sensitive dependency pin, and size-focused release profile | Changing packaging or dependencies |
 | `mise.toml` | Pinned tools and reproducible setup, test, build, check, reload, release, install, deploy, status, and docs tasks | Running or changing maintainer automation |
 | `scripts/` | Safe session-aware plugin reload, explicit known-state status republication, and local OpenWiki update cleanup | Changing runtime helpers, reload recovery, or documentation automation |
