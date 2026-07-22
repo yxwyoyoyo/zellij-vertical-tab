@@ -156,8 +156,8 @@ zellij kill-session <name>
 
 Unset the Zellij variables so the process does not think it is nested. The input pipe may approve permissions with `y` and inject SGR mouse sequences. A minimum pane-aware pass verifies:
 
-1. startup survives permission grant and renders a sidebar initially sized to 13% with no horizontal tab bar;
-2. with normal Zellij mouse handling, dragging the sidebar/content boundary changes the current tab's sidebar width even when pane frames are hidden; a new tab starts at 13% rather than inheriting that width;
+1. startup survives permission grant and renders a sidebar initially sized to 32 columns with no horizontal tab bar;
+2. with normal Zellij mouse handling, dragging the sidebar/content boundary changes the current tab's sidebar width even when pane frames are hidden; a new tab starts at 32 columns rather than inheriting that width;
 3. one-pane tabs stay compact, while a multi-pane tab lists all terminal panes and excludes plugin panes;
 4. tab and child rows use native `>`/`-` list bulletins, the active tab and focused visible-layer child use complete-row selected-list styling, and children follow tiled/floating/suppressed visual order;
 5. one-pane status appears on the tab, multi-pane statuses remain on exact children, and no aggregate/count appears; on selected and unselected rows, verify idle remains dim, working cyan, waiting orange, and done green under the active theme;
@@ -202,7 +202,7 @@ Keep `ROW_RIGHT_PADDING = 1`, reserve badge width before fitting the body, and e
 
 ### Sidebar does not resize
 
-Confirm the layout uses flexible `size="13%"`, not fixed `size=32`, and that Zellij mouse handling is enabled. Drag the one-cell **boundary between the sidebar and content**. Pane frames may be enabled to make that boundary visible, but neither pane frames nor advanced mouse actions are required for resizing. Start a fresh session after changing layout or configuration: hot reload replaces plugin code but does not reconstruct existing pane geometry. Width changes are tab-local and intentionally not persisted.
+Confirm the layout uses fixed `size=32` and that Zellij mouse handling is enabled. The integer sets the initial width but does not disable native resizing: drag the one-cell **boundary between the sidebar and content**. Pane frames may be enabled to make that boundary visible, but neither pane frames nor advanced mouse actions are required. Start a fresh session after changing layout or configuration because hot reload replaces plugin code without reconstructing existing pane geometry. Width changes are tab-local and intentionally not persisted.
 
 ### Client exits at startup
 

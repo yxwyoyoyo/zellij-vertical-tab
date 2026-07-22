@@ -1,6 +1,6 @@
 # AGENTS
 
-Zellij plugin (Rust → wasm32-wasip1) rendering tabs vertically in a flexible side pane that starts at 13% and can be resized from the adjacent pane boundary.
+Zellij plugin (Rust → wasm32-wasip1) rendering tabs vertically in a fixed-width side pane that starts at 32 columns and can be resized from the adjacent pane boundary.
 
 ## Commands
 
