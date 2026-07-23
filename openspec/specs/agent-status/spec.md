@@ -469,6 +469,13 @@ The agent-status integration SHALL bound long-lived helper count, cross-instance
 - **THEN** it removes that dead server directory
 - **AND** retains directories for live or permission-inaccessible PIDs
 
+#### Scenario: Stale pane records accumulate within a live server directory
+- **WHEN** session-start maintenance runs for a live Zellij server directory
+- **THEN** it removes pane records whose state is `"clear"` (explicitly expired via SessionEnd)
+- **AND** it removes pane records older than a 6-hour grace period from a different session than the current starting session
+- **AND** it preserves records matching the current session and those recently updated from other concurrent sessions
+- **AND** each removal acquires the per-pane advisory lock before unlinking the record and lock files
+
 #### Scenario: Session start discovers process ownership
 - **WHEN** the bridge needs both Codex and Zellij ancestor PIDs
 - **THEN** it resolves both identities in one bounded ancestor traversal

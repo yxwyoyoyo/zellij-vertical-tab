@@ -14,6 +14,7 @@ from status_store import apply_payload as persist_payload
 from status_store import find_zellij_ancestor
 from status_store import parse_positive_pid
 from status_store import prune_dead_server_directories
+from status_store import prune_stale_pane_records
 from status_store import snapshot_json
 from status_store import validate_payload
 
@@ -99,6 +100,7 @@ def dispatch_update(
     )
     if prune_dead and owning_zellij is not None:
         prune_dead_server_directories(owning_zellij)
+        prune_stale_pane_records(owning_zellij, keep_session_id=update.session_id)
     if owning_zellij is not None:
         persist_payload(payload, owning_zellij)
     publish_payload(payload)

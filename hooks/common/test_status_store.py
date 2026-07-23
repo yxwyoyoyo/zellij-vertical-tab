@@ -181,5 +181,76 @@ class StatusStoreTests(unittest.TestCase):
         self.assertTrue((sessions / "not-a-pid").is_dir())
 
 
+    def test_prunes_clear_and_stale_pane_records(self):
+        import time
+
+        now_ms = time.time_ns() // 1_000_000
+        old_ms = now_ms - (status_store.STALE_RECORD_GRACE_MS + 1000)
+        recent_ms = now_ms - 1000
+
+        sessions = Path(self.temporary.name) / "sessions" / "200"
+        sessions.mkdir(parents=True)
+
+        # Explicitly expired — should always be removed.
+        clear_record = json.dumps(
+            payload(old_ms, state="clear", session_id="dead", event="session_exit")
+        )
+        # Old record from different session — crash zombie.
+        old_record = json.dumps(
+            payload(old_ms, state="done", session_id="dead")
+        )
+        # Recent record from different session — keep (might still be alive).
+        recent_other = json.dumps(
+            payload(recent_ms, state="done", session_id="other")
+        )
+        # Recent record from current session — keep.
+        current_rec = json.dumps(
+            payload(recent_ms, state="working", session_id="current")
+        )
+
+        (sessions / "terminal_0.json").write_text(clear_record)
+        (sessions / "terminal_1.json").write_text(old_record)
+        (sessions / "terminal_2.json").write_text(recent_other)
+        (sessions / "terminal_3.json").write_text(current_rec)
+
+        removed = status_store.prune_stale_pane_records(200, keep_session_id="current")
+        self.assertEqual(removed, 2)
+
+        remaining = sorted(
+            p.name for p in sessions.glob("terminal_*.json")
+        )
+        self.assertEqual(remaining, ["terminal_2.json", "terminal_3.json"])
+
+    def test_prune_without_session_id_only_removes_clear(self):
+        import time
+
+        now_ms = time.time_ns() // 1_000_000
+        old_ms = now_ms - (status_store.STALE_RECORD_GRACE_MS + 1000)
+
+        sessions = Path(self.temporary.name) / "sessions" / "300"
+        sessions.mkdir(parents=True)
+
+        clear_record = json.dumps(
+            payload(old_ms, state="clear", session_id="dead", event="session_exit")
+        )
+        # Old "done" record — should NOT be removed without keep_session_id
+        old_done = json.dumps(
+            payload(old_ms, state="done", session_id="dead")
+        )
+
+        (sessions / "terminal_0.json").write_text(clear_record)
+        (sessions / "terminal_1.json").write_text(old_done)
+
+        removed = status_store.prune_stale_pane_records(300)
+        self.assertEqual(removed, 1)
+        remaining = sorted(
+            p.name for p in sessions.glob("terminal_*.json")
+        )
+        self.assertEqual(remaining, ["terminal_1.json"])
+
+    def test_prune_stale_pane_records_is_noop_for_missing_directory(self):
+        self.assertEqual(status_store.prune_stale_pane_records(99999), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
