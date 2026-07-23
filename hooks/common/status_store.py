@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 
@@ -29,6 +30,7 @@ SUPPORTED_EVENTS = {
 }
 MAX_RECORD_BYTES = 64 * 1024
 MAX_ANCESTORS = 16
+STALE_RECORD_GRACE_MS = 6 * 60 * 60 * 1000  # 6 hours — crash cleanup safety margin
 STATE_DIR_ENV = "ZELLIJ_VERTICAL_TAB_STATE_DIR"
 
 
@@ -136,6 +138,78 @@ def prune_dead_server_directories(current_zellij_pid: int) -> int:
         try:
             shutil.rmtree(entry)
             removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _file_for_pane(directory: Path, pane_id: int) -> Path:
+    return directory / f"terminal_{pane_id}.json"
+
+
+def _lock_for_pane(directory: Path, pane_id: int) -> Path:
+    return directory / f"terminal_{pane_id}.lock"
+
+
+def prune_stale_pane_records(zellij_pid: int, keep_session_id: str | None = None) -> int:
+    """Remove pane records that are explicitly expired or from long-dead sessions.
+
+    Safe to call frequently — only ``"clear"`` state records (explicitly
+    expired via ``SessionEnd``) and records older than the grace period with a
+    different *session_id* are removed.
+    """
+    directory = server_directory(zellij_pid)
+    if directory is None or not directory.is_dir():
+        return 0
+    now_ms = time.time_ns() // 1_000_000
+    removed = 0
+    try:
+        paths = list(directory.glob("terminal_*.json"))
+    except OSError:
+        return 0
+    for path in paths:
+        pane_id = parse_pane_id(path.stem)
+        record = _read_record(path)
+        if pane_id is None or record is None:
+            continue
+        record_session = record.get("session_id")
+        record_state = record.get("state")
+        record_age = now_ms - record["updated_at_ms"]
+
+        # Explicitly expired: SessionEnd fired, state is "clear".
+        if record_state == "clear":
+            should_remove = True
+        # Same session — keep (it's the current session, or a concurrent one).
+        elif (
+            isinstance(keep_session_id, str)
+            and isinstance(record_session, str)
+            and record_session == keep_session_id
+        ):
+            continue
+        # Stale record from a different session — likely a crash zombie.
+        # Only age-prune when we have a keep-session to anchor against.
+        elif (
+            isinstance(keep_session_id, str)
+            and record_age > STALE_RECORD_GRACE_MS
+        ):
+            should_remove = True
+        else:
+            continue
+
+        lock_path = _lock_for_pane(directory, pane_id)
+        try:
+            with lock_path.open("a+b") as lock_file:
+                os.chmod(lock_path, 0o600)
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                # Re-read under lock to avoid TOCTOU
+                current = _read_record(path)
+                if current is None:
+                    continue
+                current_state = current.get("state")
+                if should_remove or current_state == "clear":
+                    path.unlink(missing_ok=True)
+                    lock_path.unlink(missing_ok=True)
+                    removed += 1
         except OSError:
             continue
     return removed
