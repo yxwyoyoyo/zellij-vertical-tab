@@ -13,5 +13,5 @@
 ## 3. Verification and Publication
 
 - [x] 3.1 Validate shell syntax, guarded failure paths, OpenSpec artifacts, and the complete release build
-- [ ] 3.2 Commit and push the release workflow from the remote default branch
-- [ ] 3.3 Publish `v0.1.0`, verify both assets and checksums from GitHub, and confirm the stable latest-download URL
+- [x] 3.2 Commit and push the release workflow from the remote default branch
+- [x] 3.3 Publish `v0.1.0`, verify both assets and checksums from GitHub, and confirm the stable latest-download URL
