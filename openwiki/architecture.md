@@ -43,7 +43,7 @@ The explicit `[[bin]]` target in `Cargo.toml` is required because Zellij loads a
 | `agent_acknowledgements`, `focused_terminal_panes` | Exact completed records acknowledged by focus and the last complete client-viewed focus observation |
 | `plugin_id`, `zellij_pid`, `peer_plugin_ids` | Identity of this sidebar, its live Zellij server, same-URL sidebar instances, and the lowest-ID synchronization leader |
 | `host_restore_requested` | One-shot guard for host-journal reconciliation after permission grant |
-| `scroll_offset`, `rows` | First flattened hierarchy row and last rendered viewport height |
+| `scroll_offset`, `rows` | First flattened hierarchy row and last valid nonzero rendered viewport height; transient zero-height reattach renders do not replace it |
 | `unselectable_set` | One-time guard for deferred selectability |
 
 Pane IDs, not tab names or pane titles, own agent state and pane click identity. Titles are presentation-only and fall back to `pane <id>` when empty. `TabInfo.position` remains zero-based internally and becomes one-based only when passed to `switch_tab_to`; visible labels rely on the native `>` bulletin instead of repeating the position.
@@ -105,7 +105,7 @@ A newly discovered peer still receives a sync request and the sender's current f
 
 ### Durable recovery
 
-Agent-specific entrypoints normalize native hook data into `AgentUpdate`, then `hooks/common/agent_bridge.py` obtains the pane ID and timestamp, validates the version-1 payload, persists it through `hooks/common/status_store.py`, and publishes it to Zellij. Records are isolated by Zellij server PID and terminal pane, serialized under an advisory per-pane lock, ordered by timestamp, session, turn, and terminal-completion rules, and replaced atomically. Codex starts one locked PID watcher because it has no session-end hook; Claude Code instead emits a matching-session clear from `SessionEnd`. Session start also prunes only numeric host-journal shards whose PID is demonstrably absent. This host journal remains available when a detached session has no plugin runtime to receive an undirected pipe (`hooks/common/`, `hooks/codex/`, `hooks/claude/`).
+Agent-specific entrypoints normalize native hook data into `AgentUpdate`, then `hooks/common/agent_bridge.py` obtains the pane ID and timestamp, validates the version-1 payload, persists it through `hooks/common/status_store.py`, and publishes it to Zellij. Records are isolated by Zellij server PID and terminal pane, serialized under an advisory per-pane lock, ordered by timestamp, session, turn, and terminal-completion rules, and replaced atomically. Codex starts one locked PID watcher because it has no session-end hook; Claude Code instead emits a matching-session clear from `SessionEnd`. Session-start maintenance removes numeric server shards only when their PID is demonstrably absent. Within the current live-server shard, it also removes explicit `clear` records and records older than six hours from a session other than the one starting; current-session records and recent records from potentially concurrent sessions remain. Pane files are reread under their advisory lock before both the record and lock file are unlinked. This host journal remains available when a detached session has no plugin runtime to receive an undirected pipe (`hooks/common/`, `hooks/codex/`, `hooks/claude/`).
 
 Every plugin mutation also serializes lifecycle records and exact acknowledgement references to `/cache/agent-status-<zellij-pid>/agent-status-<plugin-id>.json`. On `load()`, an instance scans only bounded, well-formed files in its current server shard and merges them through the normal timestamp, session, turn, and terminal-completion rules. If that shard does not yet exist, the first updated instance reads compatible legacy flat files for the current server and persists their merged state into the shard; the shard then prevents later restores from rescanning flat history. It deliberately does not restore `focused_terminal_panes`, so runtime startup cannot fabricate a focus transition or acknowledge an unseen completion.
 
@@ -125,7 +125,7 @@ Native list items are rendered to the exact `cols` width so selected background 
 
 ### Viewport and overflow
 
-`clamp_offset` bounds scrolling against the flattened row count. `visible_window` minimally shifts that offset to reveal the active **tab row**; pane children before it therefore count in the coordinate. `▲` marks hidden hierarchy rows above and `▼` hidden rows below. Wheel events move exactly one flattened row.
+`clamp_offset` bounds scrolling against the flattened row count. `visible_window` minimally shifts that offset to reveal the active **tab row**; pane children before it therefore count in the coordinate. `▲` marks hidden hierarchy rows above and `▼` hidden rows below. Wheel events move exactly one flattened row. During reattach, Zellij can transiently call `render(0, cols)` while recalculating layout; the plugin preserves the last valid nonzero `rows` value rather than poisoning later viewport updates, and ScrollDown defensively uses a one-row minimum until a real height is known.
 
 ### Exact pane clicks
 

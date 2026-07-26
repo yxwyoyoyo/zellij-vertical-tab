@@ -38,6 +38,7 @@ run = [
   "cargo build --target wasm32-wasip1",
   "openspec validate --all --strict",
   "sh -n scripts/update-openwiki",
+  "sh -n scripts/publish-release",
   "test ! -e .github/workflows/openwiki-update.yml",
   "test -L CLAUDE.md && test \"$(readlink CLAUDE.md)\" = \"AGENTS.md\"",
   "git diff --check",
@@ -57,6 +58,10 @@ run = "./scripts/reload-plugin debug"
 description = "Run the full gate and build release WASM"
 depends = ["check"]
 run = "cargo build --release --target wasm32-wasip1"
+
+[tasks.publish]
+description = "Build and publish a versioned GitHub Release with WASM and checksum"
+run = "./scripts/publish-release"
 
 [tasks.install]
 description = "Build and install release WASM into the user Zellij plugin directory"

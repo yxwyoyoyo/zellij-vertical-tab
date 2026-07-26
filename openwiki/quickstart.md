@@ -17,7 +17,7 @@ The [architecture guide](architecture.md) explains the flattened row model, pane
 ### Requirements
 
 - Zellij **0.44.3** and matching `zellij-tile = 0.44.3`.
-- [`mise`](development.md#bootstrap-and-task-entrypoints), which pins Rust **1.97.1** and Node **26.5.0** and installs the `wasm32-wasip1` target plus repository CLIs (`mise.toml`, `DEVELOPMENT.md`).
+- [`mise`](development.md#bootstrap-and-task-entrypoints), which pins Rust **1.97.1** and Node **24.18.0 LTS** and installs the `wasm32-wasip1` target plus repository CLIs (`mise.toml`, `DEVELOPMENT.md`).
 - A Nerd Font for the four agent-status glyphs and the native-attention bell.
 
 ```sh
@@ -27,6 +27,8 @@ mise run setup # once: WASM target, OpenSpec, and OpenWiki
 mise run test  # Rust host tests + common, Codex, and Claude bridge tests
 mise run dev   # build debug WASM and launch zellij.kdl
 ```
+
+Users who do not need a source checkout can instead download `zellij_vertical_tab.wasm` and its SHA-256 checksum from the latest GitHub Release; the release notes identify the required matching Zellij ABI. Maintainers publish those assets explicitly from a clean, pushed default branch through the guarded [`mise run publish -- vX.Y.Z` workflow](development.md#release-and-maintenance-notes), not through hosted CI (`README.md`, `scripts/publish-release`).
 
 The development layout loads `target/wasm32-wasip1/debug/zellij_vertical_tab.wasm` into a pane that starts at a fixed **32 columns**, giving the sidebar consistent initial geometry across viewport sizes. With normal Zellij mouse handling, start a fresh session and drag the tiled boundary between the sidebar and content to resize the sidebar. Pane frames are optional: showing them makes the boundary visible, while hiding them leaves the same one-cell drag target. Zellij owns that width per tab: it is not persisted or synchronized, and each new tab starts again at 32 columns. On first use, approve `ReadApplicationState`, `ChangeApplicationState`, `ReadCliPipes`, `MessageAndLaunchOtherPlugins`, and `RunCommands`; the last three support agent messages, sidebar-instance synchronization, and detached-event recovery. See [the layout architecture](architecture.md#runtime-and-layout-constraints) and [fresh-session verification](development.md#runtime-verification) for the boundary and checks.
 
@@ -84,7 +86,6 @@ Git history shows the initial vertical list followed by specification-driven inc
 
 ## Backlog
 
-- **Automated product CI/artifact publishing** — source anchor: `.github/workflows/` and `tasks/todo.md`; deferred because product CI remains a future idea, while OpenWiki updates run locally through `mise run docs` rather than a maintained repository workflow.
 - **Future interactions (hover, new-tab row, right-click close)** — source anchor: `tasks/todo.md`; deferred because these remain ideas rather than implemented behavior.
 - **Upstream Zellij startup-crash report** — source anchor: `tasks/lessons.md`; deferred because no upstream issue or resolution is recorded.
 - **Standalone license file** — source anchor: `Cargo.toml` and `README.md`; metadata says MIT but no `LICENSE` file is checked in.

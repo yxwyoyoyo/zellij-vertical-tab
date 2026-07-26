@@ -163,6 +163,25 @@ Build a release only after the complete local gate:
 mise run release
 ```
 
+Publish a new version from a clean, pushed default branch after updating the
+`Cargo.toml` package version:
+
+```sh
+mise run publish -- v0.1.0
+```
+
+The guarded command requires authenticated `gh`, verifies that the tag matches
+the package version and that `HEAD` equals the remote default branch, then runs
+the complete release gate. It publishes `zellij_vertical_tab.wasm` and
+`zellij_vertical_tab.wasm.sha256` with generated notes and the matching
+`zellij-tile` version. It refuses to replace an existing tag or release.
+
+GitHub CLI creates the release as a draft while uploading assets and publishes
+it only after the uploads succeed. If publication is interrupted, inspect
+drafts with `gh release list` before retrying. Release publishing is an explicit
+local maintainer operation; this repository does not need a GitHub Actions
+workflow for it.
+
 Install it for everyday use:
 
 ```sh
@@ -190,7 +209,8 @@ mise tasks ls
 - `spec` — strict OpenSpec validation
 - `check` — formatting, tests, Clippy, debug WASM, OpenSpec, and diff hygiene
 - `dev` / `reload` — fresh development session or fast hot reload
-- `release` / `install` / `deploy` — gated release workflow
+- `release` / `publish` / `install` / `deploy` — gated build, GitHub Release,
+  local installation, and hot-reload workflow
 - `status` — explicitly republish known agent state after reload
 - `docs` — regenerate OpenWiki after the implementation is stable
 

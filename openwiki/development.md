@@ -12,7 +12,7 @@ This runbook applies the invariants in the [plugin architecture](architecture.md
 
 ## Mise-managed workflows
 
-`AGENTS.md` is the canonical shared agent instruction file, with `CLAUDE.md` as a compatibility symlink; `DEVELOPMENT.md` is the detailed maintainer workflow. The checked-in `mise.toml` pins Rust 1.97.1 and Node 26.5.0 and exposes task aliases so tests, builds, runtime helpers, releases, specifications, and documentation use consistent entrypoints.
+`AGENTS.md` is the canonical shared agent instruction file, with `CLAUDE.md` as a compatibility symlink; `DEVELOPMENT.md` is the detailed maintainer workflow. The checked-in `mise.toml` pins Rust 1.97.1 and Node 24.18.0 LTS and exposes task aliases so tests, builds, runtime helpers, releases, specifications, and documentation use consistent entrypoints.
 
 ### Bootstrap and task entrypoints
 
@@ -122,7 +122,7 @@ Deploy the hooks and WASM together: watcher/journal ownership lives in Python wh
 
 Run `mise run test`; its Rust tests are colocated in `src/main.rs` and currently cover:
 
-- viewport bounds and active-tab following over flattened hierarchy rows;
+- viewport bounds and active-tab following over flattened hierarchy rows, including preservation of the last valid height across transient `render(0, cols)` calls during reattach;
 - terminal-pane filtering and deterministic tiled/floating/suppressed ordering;
 - compact zero/one-pane tabs and expanded multi-pane children;
 - focused tiled/floating child selection and empty-title fallback;
@@ -135,7 +135,7 @@ Keep runtime host calls out of these tests unless a proper mock layer is introdu
 
 ### Python bridge tests
 
-`mise run test` runs `hooks/common`, `hooks/codex`, and `hooks/claude` unittest suites. Common coverage owns normalized construction, validation, journal ordering, snapshot delegation, best-effort publication, and colocated installation. Adapter coverage owns native lifecycle mappings, post-approval recovery, Codex/Zellij ancestry discovery, watcher metadata refresh and lock deduplication, Claude `SessionEnd` cleanup and exact notification JSON, and Codex notifier forwarding.
+`mise run test` runs `hooks/common`, `hooks/codex`, and `hooks/claude` unittest suites. Common coverage owns normalized construction, validation, journal ordering, snapshot delegation, best-effort publication, colocated installation, and locked cleanup of explicit-clear and six-hour stale different-session pane records. Adapter coverage owns native lifecycle mappings, post-approval recovery, Codex/Zellij ancestry discovery, watcher metadata refresh and lock deduplication, Claude `SessionEnd` cleanup and exact notification JSON, and Codex notifier forwarding.
 
 ### WASM and specification checks
 
@@ -171,7 +171,8 @@ Unset the Zellij variables so the process does not think it is nested. The input
 13. for Codex, trigger a request that automatic review approves and verify its permission event remains working; for Claude Code, trigger a visible permission dialog and verify waiting, then verify tool completion or denial returns to working and a delayed same-prompt event cannot replace done;
 14. run Codex and Claude Code in separate panes, verify their records remain independent, end or switch the Claude session and verify its matching record clears, then detach and confirm the shared journal restores both agents' newest records;
 15. with several tabs, publish one lifecycle event and verify every sidebar applies it without plugin relay; change focus from a nonleader, verify bounded leader fanout, then close the lowest-ID instance and confirm turnover;
-16. trigger repeated `SessionStart` events for one Codex PID and verify one watcher remains, the latest pane/session metadata drives its exit clear, and a later start prunes only demonstrably dead server-journal shards.
+16. trigger repeated `SessionStart` events for one Codex PID and verify one watcher remains, the latest pane/session metadata drives its exit clear, and a later start prunes demonstrably dead server-journal shards plus explicit-clear and older-than-six-hour different-session records in the live shard without deleting current or recent concurrent-session records;
+17. detach and reattach after scrolling, exercise the transient layout recalculation, and verify wheel scrolling still uses the prior valid viewport until Zellij supplies the new nonzero height.
 
 ## Runbook
 
@@ -185,7 +186,7 @@ Unset the Zellij variables so the process does not think it is nested. The input
 - If only a newly created tab lacks existing statuses, inspect peer discovery/snapshot handling rather than reintroducing lifecycle relays or tab-level aggregation.
 - If focus acknowledgement diverges between tabs, verify the lowest live plugin ID is leader and that nonleaders report only to it; closing that instance should elect the next-lowest ID after the next pane manifest.
 - If repeated starts leave multiple resident watcher processes, confirm all global hook files were deployed together and that the process can create advisory locks under `${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab/sessions/<zellij-pid>/watchers/`. On filesystems without working locks, exit cleanup is intentionally skipped rather than multiplied.
-- If status is present before detach but absent after reattach or hot reload, confirm both `agent_bridge.py` and `status_store.py` are installed beside each enabled adapter and were deployed together, inspect `${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab/sessions/<zellij-pid>/`, and distinguish the same live server from a newly started server. The WASM cache lives in `/cache/agent-status-<zellij-pid>/`; existing agent sessions populate the journal only on their next lifecycle event.
+- If status is present before detach but absent after reattach or hot reload, confirm both `agent_bridge.py` and `status_store.py` are installed beside each enabled adapter and were deployed together, inspect `${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab/sessions/<zellij-pid>/`, and distinguish the same live server from a newly started server. The WASM cache lives in `/cache/agent-status-<zellij-pid>/`; existing agent sessions populate the journal only on their next lifecycle event. Session start intentionally deletes `clear` records and different-session records older than six hours, but preserves current-session and recent potentially concurrent records.
 - If an automatically reviewed request shows waiting, confirm its transcript contains a matching `turn_context` with `approvals_reviewer` set to `auto_review`, the installed `agent_status.py` matches this repository, and the hook is trusted in Codex `/hooks`. Missing or unreadable reviewer context intentionally falls back to waiting.
 
 ### Wrong row or pane activates
@@ -216,6 +217,8 @@ Confirm the explicit binary target and `register_plugin!(State)` remain. A react
 
 - Treat a Zellij upgrade as an ABI migration: update the binary, `zellij-tile`, lockfile, and runtime test environment together.
 - `mise run release` gates and builds release WASM; `mise run install` copies it to `${ZELLIJ_PLUGIN_DIR:-$HOME/.config/zellij/plugins}`, and `mise run deploy -- <session>` installs then reloads it. When recovery or synchronization changes span agent hooks and `src/main.rs`, deploy the global hooks and WASM together. Startup-sensitive changes still need a new session.
-- No checked-in product CI publishes WASM; release and installation remain maintainer-run tasks.
+- `mise run publish -- vX.Y.Z` publishes the checked release WASM and `zellij_vertical_tab.wasm.sha256` as GitHub Release assets. Before building, `scripts/publish-release` requires authenticated `gh`, a completely clean worktree, the remote default branch, a tag matching `Cargo.toml`, local `HEAD` equal to the fetched remote head, and no existing tag or release. `gh release create` stages uploads as a draft and publishes only after both assets succeed; after an interrupted attempt, inspect drafts with `gh release list` before retrying.
+- Users can install without Rust or mise from the stable `/releases/latest/download/zellij_vertical_tab.wasm` URL and verify the adjacent checksum with `shasum -a 256 -c`. Release notes name the matching `zellij-tile`/Zellij version because one release supports one plugin ABI.
+- No checked-in product CI publishes WASM; publishing is an explicit local maintainer operation.
 - Keep baseline OpenSpec files synchronized with implemented behavior, then archive completed changes with their proposal/design/task evidence. `mise run spec` performs strict validation.
 - Run `mise run docs` only after code and specifications stabilize. `mise.toml` delegates to `scripts/update-openwiki`, which runs a local OpenWiki code-mode update, removes the generator-created scheduled workflow, and restores the canonical local-update guidance in `AGENTS.md`. `CLAUDE.md` receives the same guidance through its symlink rather than a duplicate managed file.

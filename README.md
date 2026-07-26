@@ -27,11 +27,24 @@ it.
 ### Requirements
 
 - Zellij **0.44.3** (`zellij-tile` must match the Zellij binary)
-- [mise](https://mise.jdx.dev/) with the project tools installed
 - A Nerd Font for agent-status icons; the tested profile uses
   `0xProto Nerd Font Mono`
 
-Build and install the plugin:
+Download and verify the latest release:
+
+```sh
+plugin_dir="${ZELLIJ_PLUGIN_DIR:-$HOME/.config/zellij/plugins}"
+mkdir -p "$plugin_dir"
+curl -fL \
+  https://github.com/yxwyoyoyo/zellij-vertical-tab/releases/latest/download/zellij_vertical_tab.wasm \
+  -o "$plugin_dir/zellij_vertical_tab.wasm"
+curl -fL \
+  https://github.com/yxwyoyoyo/zellij-vertical-tab/releases/latest/download/zellij_vertical_tab.wasm.sha256 \
+  -o "$plugin_dir/zellij_vertical_tab.wasm.sha256"
+(cd "$plugin_dir" && shasum -a 256 -c zellij_vertical_tab.wasm.sha256)
+```
+
+To build from source instead, install [mise](https://mise.jdx.dev/) and run:
 
 ```sh
 mise trust
@@ -39,6 +52,10 @@ mise install
 mise run setup     # first checkout only
 mise run install
 ```
+
+Each [GitHub Release](https://github.com/yxwyoyoyo/zellij-vertical-tab/releases)
+contains the optimized WASM and its SHA-256 checksum. Release assets are built
+for the Zellij version stated in their notes; plugin ABI versions must match.
 
 Add the sidebar to `~/.config/zellij/layouts/default.kdl`:
 
