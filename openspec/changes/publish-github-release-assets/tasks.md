@@ -21,4 +21,4 @@
 - [x] 4.1 Extend the publishing script to package the common, Codex, and Claude Code hook runtime files and checksums under stable release asset names
 - [x] 4.2 Add concise release-bundle installation and configuration-merging steps for Codex and Claude Code to the README and maintainer documentation
 - [x] 4.3 Regenerate OpenWiki and pass the complete validation and release build
-- [ ] 4.4 Commit and push the hook distribution update, upload both hook assets to `v0.1.0`, and verify their latest-download URLs and checksum
+- [x] 4.4 Commit and push the hook distribution update, upload both hook assets to `v0.1.0`, and verify their latest-download URLs and checksum
