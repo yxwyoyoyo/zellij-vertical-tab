@@ -172,15 +172,24 @@ mise run publish -- v0.1.0
 
 The guarded command requires authenticated `gh`, verifies that the tag matches
 the package version and that `HEAD` equals the remote default branch, then runs
-the complete release gate. It publishes `zellij_vertical_tab.wasm` and
-`zellij_vertical_tab.wasm.sha256` with generated notes and the matching
-`zellij-tile` version. It refuses to replace an existing tag or release.
+the complete release gate. It publishes `zellij_vertical_tab.wasm`,
+`agent-hooks.tar.gz`, and a SHA-256 checksum for each with generated notes and
+the matching `zellij-tile` version. The hook archive contains the common
+runtime, Codex adapter/notifier/template, and Claude Code adapter/template from
+the same commit as the WASM. The command refuses to replace an existing tag or
+release.
 
 GitHub CLI creates the release as a draft while uploading assets and publishes
 it only after the uploads succeed. If publication is interrupted, inspect
 drafts with `gh release list` before retrying. Release publishing is an explicit
 local maintainer operation; this repository does not need a GitHub Actions
 workflow for it.
+
+For an already-published release that predates the hook bundle, build the same
+archive layout from that tag with `scripts/package-agent-hooks <staging-dir>`,
+upload `agent-hooks.tar.gz` and `agent-hooks.tar.gz.sha256` with
+`gh release upload <tag>`, and verify the public latest-download URLs. Never
+upload hooks from a different source version than the release tag.
 
 Install it for everyday use:
 

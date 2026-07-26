@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    printf 'Usage: package-agent-hooks <existing-output-directory>\n' >&2
+    exit 2
+fi
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+output_dir=$(CDPATH= cd -- "$1" && pwd)
+hooks_root="$output_dir/zellij-vertical-tab-hooks"
+hooks_archive="$output_dir/agent-hooks.tar.gz"
+hooks_checksum="$output_dir/agent-hooks.tar.gz.sha256"
+
+[ ! -e "$hooks_root" ] || {
+    printf 'Hook bundle staging path already exists: %s\n' "$hooks_root" >&2
+    exit 1
+}
+[ ! -e "$hooks_archive" ] && [ ! -e "$hooks_checksum" ] || {
+    printf 'Hook bundle assets already exist in: %s\n' "$output_dir" >&2
+    exit 1
+}
+
+mkdir -p "$hooks_root/common" "$hooks_root/codex" "$hooks_root/claude"
+cp "$repo_root/hooks/common/agent_bridge.py" \
+    "$repo_root/hooks/common/status_store.py" \
+    "$hooks_root/common/"
+cp "$repo_root/hooks/codex/agent_status.py" \
+    "$repo_root/hooks/codex/agent_notify.py" \
+    "$repo_root/hooks/codex/hooks.json" \
+    "$hooks_root/codex/"
+cp "$repo_root/hooks/claude/agent_status.py" \
+    "$repo_root/hooks/claude/settings.json" \
+    "$hooks_root/claude/"
+
+COPYFILE_DISABLE=1 tar -czf "$hooks_archive" \
+    -C "$output_dir" zellij-vertical-tab-hooks
+(
+    cd "$output_dir"
+    shasum -a 256 agent-hooks.tar.gz >agent-hooks.tar.gz.sha256
+)

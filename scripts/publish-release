@@ -72,7 +72,10 @@ stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/zellij-vertical-tab-release.XXXXXX")
 trap 'rm -rf "$stage_dir"' EXIT HUP INT TERM
 asset="$stage_dir/zellij_vertical_tab.wasm"
 checksum="$stage_dir/zellij_vertical_tab.wasm.sha256"
+hooks_archive="$stage_dir/agent-hooks.tar.gz"
+hooks_checksum="$stage_dir/agent-hooks.tar.gz.sha256"
 cp "$artifact" "$asset"
+"$repo_root/scripts/package-agent-hooks" "$stage_dir"
 (
     cd "$stage_dir"
     shasum -a 256 zellij_vertical_tab.wasm >zellij_vertical_tab.wasm.sha256
@@ -85,7 +88,9 @@ notes=$(
 
 gh release create "$tag" \
     "$asset#Zellij vertical tab WASM" \
-    "$checksum#SHA-256 checksum" \
+    "$checksum#WASM SHA-256 checksum" \
+    "$hooks_archive#Codex and Claude Code agent hooks" \
+    "$hooks_checksum#Agent hooks SHA-256 checksum" \
     --repo "$repository" \
     --target "$local_head" \
     --title "$tag" \

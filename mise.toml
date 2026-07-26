@@ -38,6 +38,7 @@ run = [
   "cargo build --target wasm32-wasip1",
   "openspec validate --all --strict",
   "sh -n scripts/update-openwiki",
+  "sh -n scripts/package-agent-hooks",
   "sh -n scripts/publish-release",
   "test ! -e .github/workflows/openwiki-update.yml",
   "test -L CLAUDE.md && test \"$(readlink CLAUDE.md)\" = \"AGENTS.md\"",

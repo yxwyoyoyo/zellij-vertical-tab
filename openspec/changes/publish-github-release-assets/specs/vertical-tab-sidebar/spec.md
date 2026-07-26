@@ -1,13 +1,26 @@
 ## ADDED Requirements
 
-### Requirement: Downloadable release artifact
-The project SHALL publish each supported version as a GitHub Release containing the checked release WASM and a SHA-256 checksum under stable asset names.
+### Requirement: Downloadable release artifacts
+The project SHALL publish each supported version as a GitHub Release containing the checked release WASM, a version-matched Codex and Claude Code hook bundle, and SHA-256 checksums under stable asset names.
 
 #### Scenario: User downloads the latest release
 - **WHEN** a user requests the latest `zellij_vertical_tab.wasm` release asset
 - **THEN** GitHub serves the optimized `wasm32-wasip1` artifact without requiring a local Rust build
 - **AND** the same release provides `zellij_vertical_tab.wasm.sha256`
 - **AND** the release notes identify the compatible Zellij version
+
+#### Scenario: User downloads agent integrations
+- **WHEN** a user requests the latest `agent-hooks.tar.gz` release asset
+- **THEN** GitHub serves the common bridge, Codex adapter and template, and Claude Code adapter and template without requiring a repository checkout
+- **AND** the same release provides `agent-hooks.tar.gz.sha256`
+- **AND** the hook bundle comes from the same source version as the release WASM
+
+#### Scenario: User installs an agent integration
+- **WHEN** a user follows the README setup for Codex or Claude Code
+- **THEN** the documented commands install the selected adapter and common runtime from the release bundle
+- **AND** fresh configuration can use the shipped template
+- **AND** existing configuration is merged rather than overwritten
+- **AND** Codex completion notification configuration is documented
 
 #### Scenario: Maintainer publishes a version
 - **WHEN** a maintainer runs the documented publish command with a valid `vMAJOR.MINOR.PATCH` tag

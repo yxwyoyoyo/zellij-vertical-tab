@@ -106,6 +106,64 @@ Install the bridge for each agent you use. See
 notification configuration, lifecycle behavior, recovery, and the common
 adapter interface.
 
+Download and verify the version-matched hook bundle once:
+
+```sh
+hooks_dir="${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab"
+mkdir -p "$hooks_dir"
+curl -fL \
+  https://github.com/yxwyoyoyo/zellij-vertical-tab/releases/latest/download/agent-hooks.tar.gz \
+  -o "$hooks_dir/agent-hooks.tar.gz"
+curl -fL \
+  https://github.com/yxwyoyoyo/zellij-vertical-tab/releases/latest/download/agent-hooks.tar.gz.sha256 \
+  -o "$hooks_dir/agent-hooks.tar.gz.sha256"
+(cd "$hooks_dir" && shasum -a 256 -c agent-hooks.tar.gz.sha256)
+tar -xzf "$hooks_dir/agent-hooks.tar.gz" -C "$hooks_dir"
+hooks_source="$hooks_dir/zellij-vertical-tab-hooks"
+```
+
+### Codex hooks
+
+```sh
+hooks_source="${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab/zellij-vertical-tab-hooks"
+mkdir -p ~/.codex/hooks
+install -m 755 "$hooks_source/codex/agent_status.py" ~/.codex/hooks/
+install -m 755 "$hooks_source/codex/agent_notify.py" ~/.codex/hooks/
+install -m 644 "$hooks_source/common/agent_bridge.py" ~/.codex/hooks/
+install -m 644 "$hooks_source/common/status_store.py" ~/.codex/hooks/
+```
+
+If `~/.codex/hooks.json` does not exist, install
+`$hooks_source/codex/hooks.json`; otherwise merge its `hooks` entries into the
+existing file. Add this to `~/.codex/config.toml`, using your absolute home
+path:
+
+```toml
+notify = ["/usr/bin/python3", "/Users/you/.codex/hooks/agent_notify.py"]
+
+[tui]
+notifications = ["agent-turn-complete", "approval-requested"]
+notification_method = "bel"
+notification_condition = "always"
+```
+
+Start a new Codex session, open `/hooks`, and trust the user hook.
+
+### Claude Code hooks
+
+```sh
+hooks_source="${XDG_CACHE_HOME:-$HOME/.cache}/zellij-vertical-tab/zellij-vertical-tab-hooks"
+claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+mkdir -p "$claude_dir/hooks"
+install -m 755 "$hooks_source/claude/agent_status.py" "$claude_dir/hooks/"
+install -m 644 "$hooks_source/common/agent_bridge.py" "$claude_dir/hooks/"
+install -m 644 "$hooks_source/common/status_store.py" "$claude_dir/hooks/"
+```
+
+Merge the `hooks` object from `$hooks_source/claude/settings.json` into
+`$claude_dir/settings.json`; preserve every unrelated setting and existing hook.
+Then start a new Claude Code session.
+
 Status is tracked per terminal pane. One-pane tabs keep the badge on the compact
 tab row; multi-pane tabs put it on the exact pane child. Returning to a pane with
 a ready answer acknowledges that result and presents it as idle, while a newer

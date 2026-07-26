@@ -28,6 +28,10 @@ from Zellij's native bell state.
 
 ## Codex
 
+The README provides checksum-verified installation commands for users who
+downloaded the release hook bundle without cloning the repository. The commands
+below assume a source checkout.
+
 Install the dependency-free bridge and user-level hook template:
 
 ```sh
