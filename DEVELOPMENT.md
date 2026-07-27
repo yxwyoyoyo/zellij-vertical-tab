@@ -132,7 +132,9 @@ remain linear as tabs grow:
   replaying every lifecycle update;
 - repeated Codex `SessionStart` events refresh one PID-scoped watcher record;
   a non-blocking advisory lock allows only one long-lived watcher, and macOS
-  uses `kqueue` process-exit notification instead of periodic polling;
+  uses `kqueue` process-exit notification instead of periodic polling, while
+  supported Unix platforms without kqueue use bounded-interval liveness
+  polling;
 - plugin snapshots live under a Zellij-server cache shard. Flat snapshots are
   read only for one-time migration, while dead host-journal directories are
   pruned only after their PID is demonstrably absent.
@@ -154,6 +156,9 @@ Reference measurements from the July 2026 macOS test host:
 The Python interpreter remains the main per-session watcher memory cost. The
 current change bounds that cost to one watcher per Codex process; replacing the
 bridge with a smaller native helper remains a separate optimization.
+The hook runtime and tests support Unix platforms with `fcntl`; Windows remains
+out of scope. Watcher tests replace the complete `select` dependency so both
+kqueue and polling behavior are testable regardless of the host's attributes.
 
 ## Release and install
 

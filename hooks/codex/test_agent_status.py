@@ -212,27 +212,45 @@ class AgentStatusHookTests(unittest.TestCase):
 
     def test_process_exit_uses_kqueue_when_available(self):
         queue = unittest.mock.MagicMock()
+        select_module = unittest.mock.MagicMock()
+        select_module.kqueue.return_value = queue
+        select_module.kevent.return_value = "event"
+        select_module.KQ_FILTER_PROC = 1
+        select_module.KQ_EV_ADD = 2
+        select_module.KQ_EV_ENABLE = 4
+        select_module.KQ_EV_ONESHOT = 8
+        select_module.KQ_NOTE_EXIT = 16
         with (
             patch.object(AGENT_STATUS, "process_is_running", return_value=True),
-            patch.object(AGENT_STATUS.select, "kqueue", return_value=queue),
-            patch.object(AGENT_STATUS.select, "kevent", return_value="event") as kevent,
+            patch.object(AGENT_STATUS, "select", select_module),
             patch.object(AGENT_STATUS.time, "sleep") as sleep,
         ):
             AGENT_STATUS.wait_for_process_exit(42)
-        kevent.assert_called_once()
+        select_module.kevent.assert_called_once_with(
+            42,
+            filter=select_module.KQ_FILTER_PROC,
+            flags=(
+                select_module.KQ_EV_ADD
+                | select_module.KQ_EV_ENABLE
+                | select_module.KQ_EV_ONESHOT
+            ),
+            fflags=select_module.KQ_NOTE_EXIT,
+        )
         queue.control.assert_called_once_with(["event"], 1, None)
         queue.close.assert_called_once_with()
         sleep.assert_not_called()
 
     def test_process_exit_falls_back_to_bounded_polling(self):
+        process_is_running = unittest.mock.MagicMock(
+            side_effect=[True, True, False]
+        )
         with (
-            patch.object(AGENT_STATUS.select, "kqueue", None),
-            patch.object(
-                AGENT_STATUS, "process_is_running", side_effect=[True, True, False]
-            ),
+            patch.object(AGENT_STATUS, "select", object()),
+            patch.object(AGENT_STATUS, "process_is_running", process_is_running),
             patch.object(AGENT_STATUS.time, "sleep") as sleep,
         ):
             AGENT_STATUS.wait_for_process_exit(42)
+        self.assertEqual(process_is_running.call_args_list, [call(42)] * 3)
         sleep.assert_called_once_with(AGENT_STATUS.WATCHER_POLL_INTERVAL_SECONDS)
 
 

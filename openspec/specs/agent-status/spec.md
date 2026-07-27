@@ -442,6 +442,11 @@ The agent-status integration SHALL bound long-lived helper count, cross-instance
 - **WHEN** the watcher can register an event-driven process-exit notification
 - **THEN** it waits without periodic polling
 
+#### Scenario: Platform lacks process-exit events
+- **WHEN** the watcher runs on a supported Unix platform without kqueue process-exit attributes
+- **THEN** it polls process liveness at the bounded watcher interval until the process exits
+- **AND** automated tests exercise both branches without requiring the host Python `select` module to expose macOS-only attributes
+
 #### Scenario: Lifecycle status is broadcast to existing sidebars
 - **WHEN** an untargeted named Zellij pipe delivers one lifecycle update to every listening sidebar instance
 - **THEN** each instance applies the update without forwarding another copy to its peers
